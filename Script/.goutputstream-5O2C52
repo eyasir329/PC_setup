@@ -1,0 +1,264 @@
+#!/bin/bash
+
+echo "============================================"
+echo "Starting Lab PC Setup: $(date)"
+echo "============================================"
+
+# 1. Create 'participant' account
+echo "============================================"
+echo "Starting Step 1: Create 'participant' account"
+echo "============================================"
+if id "participant" &>/dev/null; then
+    echo "✅ 'participant' account already exists. Skipping creation."
+else
+    sudo adduser --disabled-password --gecos "" participant
+    if [ $? -eq 0 ]; then
+        echo "✅ 'participant' account created successfully."
+    else
+        echo "❌ Failed to create 'participant' account." >&2
+        exit 1
+    fi
+fi
+
+# 2. Install development tools
+echo "============================================"
+echo "Starting Step 2: Install Development Tools"
+echo "============================================"
+sudo apt update && sudo apt upgrade -y
+
+DEV_PACKAGES=(
+    python3
+    python3-pip
+    gcc
+    g++
+    openjdk-17-jdk
+    build-essential
+    neovim
+    git
+    micro
+    codeblocks
+    curl
+    wget
+)
+
+echo "→ Installing: ${DEV_PACKAGES[*]}"
+if sudo apt install -y "${DEV_PACKAGES[@]}"; then
+    echo "✅ Development tools installed successfully."
+else
+    echo "❌ Failed to install development tools." >&2
+    exit 1
+fi
+
+# 3. Install Sublime Text
+echo "============================================"
+echo "Starting Step 3: Install Sublime Text"
+echo "============================================"
+
+# Install the required dependencies first
+sudo apt install -y apt-transport-https ca-certificates curl
+
+# Add Sublime Text GPG key
+curl -fsSL https://download.sublimetext.com/sublimehq-pub.gpg | sudo gpg --dearmor -o /usr/share/keyrings/sublime.gpg
+
+# Add Sublime Text APT repository
+echo "deb [signed-by=/usr/share/keyrings/sublime.gpg] https://download.sublimetext.com/ apt/stable/" | sudo tee /etc/apt/sources.list.d/sublime-text.list
+
+# Update apt sources and install Sublime Text
+sudo apt update
+if sudo apt install -y sublime-text; then
+    echo "✅ Sublime Text installed successfully."
+else
+    echo "❌ Failed to install Sublime Text." >&2
+    exit 1
+fi
+
+# 4. Install Google Chrome
+echo "============================================"
+echo "Starting Step 4: Install Google Chrome"
+echo "============================================"
+
+# Download Google Chrome .deb package
+wget -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+
+# Install the downloaded .deb package
+sudo dpkg -i /tmp/chrome.deb
+
+# Fix any dependency issues
+sudo apt --fix-broken install -y
+
+# Verify installation
+if which google-chrome-stable &>/dev/null; then
+    echo "✅ Google Chrome installed successfully."
+else
+    echo "❌ Failed to install Google Chrome." >&2
+    exit 1
+fi
+
+# 5. Install Firefox
+echo "============================================"
+echo "Starting Step 5: Install Firefox"
+echo "============================================"
+
+# Install Firefox from the official Ubuntu repository
+sudo apt install -y firefox
+
+# Verify installation
+if which firefox &>/dev/null; then
+    echo "✅ Firefox installed successfully."
+else
+    echo "❌ Failed to install Firefox." >&2
+    exit 1
+fi
+
+# 6. Install Visual Studio Code
+echo "============================================"
+echo "Starting Step 6: Install Visual Studio Code"
+echo "============================================"
+
+# Install the required dependencies
+sudo apt update
+sudo apt install -y wget gpg
+
+# Import the Microsoft GPG key
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-archive-keyring.gpg
+
+# Add the Visual Studio Code repository to the sources list
+echo "deb [signed-by=/usr/share/keyrings/microsoft-archive-keyring.gpg] https://packages.microsoft.com/repos/vscode stable main" | sudo tee /etc/apt/sources.list.d/vscode.list
+
+# Update apt package lists and install Visual Studio Code
+sudo apt update
+if sudo apt install -y code; then
+    echo "✅ Visual Studio Code installed successfully."
+else
+    echo "❌ Failed to install Visual Studio Code." >&2
+    exit 1
+fi
+
+# 7. Install VS Code Extensions Globally for All Users
+echo "============================================"
+echo "Starting Step 7: Install VS Code Extensions"
+echo "============================================"
+
+# List of extensions to be installed
+EXTENSIONS=(
+    "ms-vscode.cpptools"
+    "ms-python.python"
+    "vscjava.vscode-java-pack"
+)
+
+# Define the global extension directory (system-wide installation)
+GLOBAL_EXTENSION_DIR="/usr/share/code/extensions"
+
+# Create the global extension directory if it doesn't exist
+sudo mkdir -p $GLOBAL_EXTENSION_DIR
+
+# Install each extension globally using the `code` CLI tool
+for ext in "${EXTENSIONS[@]}"; do
+    echo "→ Installing extension: $ext"
+    
+    # Install the extension globally for all users
+    sudo code --install-extension "$ext" --extensions-dir $GLOBAL_EXTENSION_DIR --force
+    
+    # Set appropriate permissions so that only root can modify the extensions
+    sudo chown -R root:root $GLOBAL_EXTENSION_DIR
+    sudo chmod -R 755 $GLOBAL_EXTENSION_DIR
+    
+    # Check if the extension was installed successfully
+    if [ $? -eq 0 ]; then
+        echo "✅ Installed $ext globally for all users."
+    else
+        echo "❌ Failed to install $ext globally." >&2
+        exit 1
+    fi
+done
+
+
+# 8. Set permissions for participant's home directory
+echo "============================================"
+echo "Starting Step 8: Set Permissions for Participant"
+echo "============================================"
+
+# Set ownership of the participant's home directory to participant
+sudo chown -R participant:participant /home/participant
+
+# Verify permissions
+if [ $? -eq 0 ]; then
+    echo "✅ Permissions set successfully for /home/participant."
+else
+    echo "❌ Failed to set permissions for /home/participant." >&2
+    exit 1
+fi
+
+# 9. Disable automatic updates
+echo "============================================"
+echo "Starting Step 9: Disable Automatic Updates"
+echo "============================================"
+
+# Stop the automatic update services
+sudo systemctl stop apt-daily.service apt-daily-upgrade.service
+
+# Disable automatic update services on boot
+sudo systemctl disable apt-daily.service apt-daily-upgrade.service
+
+# Verify the services are disabled
+if systemctl is-enabled apt-daily.service &>/dev/null && systemctl is-enabled apt-daily-upgrade.service &>/dev/null; then
+    echo "✅ Automatic updates successfully disabled."
+else
+    echo "❌ Failed to disable automatic updates." >&2
+    exit 1
+fi
+
+# 10. Clean up unnecessary packages
+echo "============================================"
+echo "Starting Step 10: Clean Up"
+echo "============================================"
+
+# Remove unnecessary packages and dependencies
+sudo apt autoremove -y
+
+# Verify cleanup
+if [ $? -eq 0 ]; then
+    echo "✅ Clean up completed successfully."
+else
+    echo "❌ Clean up failed." >&2
+    exit 1
+fi
+
+# 11. Backup participant's home directory
+echo "============================================"
+echo "Starting Step 11: Backup Participant's Home"
+echo "============================================"
+
+# Ensure the backup directory exists
+BACKUP_DIR="/opt/participant_backup"
+if [ ! -d "$BACKUP_DIR" ]; then
+    echo "✅ Creating backup directory: $BACKUP_DIR"
+    sudo mkdir -p "$BACKUP_DIR"
+fi
+
+# Create a backup of the participant's home directory
+echo "Backing up /home/participant to $BACKUP_DIR..."
+sudo rsync -aAX /home/participant/ "$BACKUP_DIR/"
+if [ $? -eq 0 ]; then
+    echo "✅ Backup of /home/participant created successfully."
+else
+    echo "❌ Failed to create backup." >&2
+    exit 1
+fi
+
+echo "============================================"
+echo "✅ Backup Process Complete!"
+echo "============================================"
+
+
+# Final step: print out that setup is complete
+echo "============================================"
+echo "✅ Lab PC Setup Completed!"
+echo "============================================"
+
+# Final printout message
+echo "The setup is complete. Backup and GRUB customization will be handled in separate scripts."
+echo "Please run 'reset_participant.sh' and 'customize_grub.sh' for additional tasks."
+echo "============================================"
+
+
