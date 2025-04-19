@@ -1,41 +1,6 @@
 #!/bin/bash
 
 echo "============================================"
-echo "Reverting Internet Access and Storage Device Restrictions"
-echo "============================================"
-
-# Define the participant's username
-PARTICIPANT_USER="participant"
-
-# Remove Squid configuration
-echo "Removing Squid configuration for domain-based access control..."
-sudo rm -f /etc/squid/squid.conf
-
-# Reinstall the original Squid configuration
-echo "Restoring the original Squid configuration..."
-sudo cp /etc/squid/squid.conf.bak /etc/squid/squid.conf
-
-# Restart Squid to apply the original config
-sudo systemctl restart squid
-
-# Remove the udev rule for blocking storage devices for participant
-echo "Removing udev rule for blocking storage devices for participant..."
-sudo rm -f /etc/udev/rules.d/99-block-storage-participant.rules
-
-# Reload udev rules to apply the changes
-sudo udevadm control --reload-rules
-
-# Remove Squid package if no longer needed
-echo "Uninstalling Squid..."
-sudo apt-get remove --purge squid -y
-sudo apt-get autoremove -y
-
-echo "============================================"
-echo "✅ Internet access and storage device restrictions have been reverted."
-echo "============================================"
-
-
-echo "============================================"
 echo "Resetting participant account to default..."
 echo "============================================"
 
@@ -173,96 +138,6 @@ done
 
 echo "============================================"
 echo "✅ VS Code extensions installed."
-echo "============================================"
-
-
-echo "============================================"
-echo "Starting Internet Access and Storage Device Restriction"
-echo "============================================"
-PARTICIPANT_USER="participant"
-
-# List of allowed domains
-ALLOWED_DOMAINS=(
-    "codeforces.com"
-    "codechef.com"
-    "vjudge.net"
-    "atcoder.jp"
-    "hackerrank.com"
-    "hackerearth.com"
-    "topcoder.com"
-    "spoj.com"
-    "lightoj.com"
-    "uva.onlinejudge.org"
-    "cses.fi"
-    "bapsoj.com"
-    "toph.co"
-)
-
-# Install Squid
-echo "Installing Squid..."
-sudo apt update
-sudo apt install squid -y
-
-# Create domain ACL file
-ACL_FILE="/etc/squid/allowed_sites.acl"
-echo "Creating domain ACL list..."
-sudo rm -f "$ACL_FILE"
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo ".$domain" | sudo tee -a "$ACL_FILE" > /dev/null
-done
-
-# Backup existing squid.conf
-SQUID_CONF="/etc/squid/squid.conf"
-SQUID_CONF_BACKUP="/etc/squid/squid.conf.bak"
-sudo cp "$SQUID_CONF" "$SQUID_CONF_BACKUP"
-
-# Overwrite squid.conf with clean config
-echo "Updating squid.conf..."
-
-sudo tee "$SQUID_CONF" > /dev/null <<EOF
-# Squid configuration to allow access to specific domains only
-
-acl allowed_sites dstdomain "/etc/squid/allowed_sites.acl"
-http_access allow allowed_sites
-http_access deny all
-
-http_port 3128
-
-access_log /var/log/squid/access.log
-cache_log /var/log/squid/cache.log
-cache_store_log /var/log/squid/store.log
-EOF
-
-# Restart Squid
-echo "Restarting Squid..."
-sudo systemctl restart squid
-
-# Check if Squid started correctly
-if systemctl is-active --quiet squid; then
-    echo "✅ Squid is running with domain restrictions."
-else
-    echo "❌ Squid failed to start. Check the config with:"
-    echo "    sudo systemctl status squid"
-    echo "    sudo journalctl -xeu squid"
-    exit 1
-fi
-
-# USB block for participant user only (basic version)
-echo "Blocking USB access for participant..."
-
-UDEV_RULE_FILE="/etc/udev/rules.d/99-block-storage-participant.rules"
-
-sudo tee "$UDEV_RULE_FILE" > /dev/null <<EOF
-# Block USB storage for participant
-SUBSYSTEM=="usb", ATTR{product}=="*Storage*", ENV{ID_FS_TYPE}=="vfat|ntfs|exfat", RUN+="/usr/bin/logger Storage device blocked for participant"
-EOF
-
-# Reload udev
-sudo udevadm control --reload-rules
-
-
-echo "============================================"
-echo "✅ Internet access and storage device restrictions applied for participant."
 echo "============================================"
 
 
