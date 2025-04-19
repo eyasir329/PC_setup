@@ -1,121 +1,78 @@
 #!/bin/bash
 
 echo "============================================"
-echo "Removing Internet Access and Storage Device Restriction for participant"
+echo "Removing Internet & Storage Restrictions for participant"
 echo "============================================"
 
 PARTICIPANT_USER="participant"
-SQUID_CONF_FILE="/etc/squid/squid.conf"
-SQUID_ALLOWED_DOMAINS_FILE="/etc/squid/allowed_domains.txt"
-UDEV_RULE_FILE="/etc/udev/rules.d/99-block-usb-storage-participant.rules"
 
-# 1. Stop and disable all services
-echo "1. Stopping and removing services..."
-# Stop and disable the participant network service
-sudo systemctl stop participant-network.service 2>/dev/null
-sudo systemctl disable participant-network.service 2>/dev/null
-sudo rm -f /etc/systemd/system/participant-network.service
+echo "1. Removing iptables restrictions..."
+sudo iptables -t filter -F OUTPUT
+sudo iptables -t nat -F OUTPUT
 
-# Stop and disable the apply namespace service
-sudo systemctl stop apply-participant-namespace.service 2>/dev/null
-sudo systemctl disable apply-participant-namespace.service 2>/dev/null
-sudo rm -f /etc/systemd/system/apply-participant-namespace.service
+# Try to remove the custom chain
+sudo iptables -D OUTPUT -m owner --uid-owner $(id -u $PARTICIPANT_USER) -j PARTICIPANT_RULES 2>/dev/null
+sudo iptables -F PARTICIPANT_RULES 2>/dev/null
+sudo iptables -X PARTICIPANT_RULES 2>/dev/null
 
-# 2. Remove the network namespace and scripts
-echo "2. Removing network namespace and configuration scripts..."
-sudo ip netns del participant_ns 2>/dev/null
-sudo rm -f /usr/local/bin/setup-participant-net.sh
-sudo rm -f /usr/local/bin/mark-participant-login.sh
-sudo rm -f /usr/local/bin/apply-participant-ns.sh
-sudo rm -f /usr/local/bin/participant-firewall.sh
-sudo rm -f /home/$PARTICIPANT_USER/.participant_net.sh
+echo "2. Removing proxy services..."
+sudo systemctl stop tinyproxy
+sudo systemctl disable tinyproxy
 
-# 3. Clean up PAM configuration
-echo "3. Removing PAM configuration..."
-for service in login gdm lightdm sddm common-session; do
-    if [ -f "/etc/pam.d/$service" ]; then
-        sudo sed -i '/mark-participant-login.sh/d' "/etc/pam.d/$service"
-    fi
-done
+# Restore tinyproxy default config
+sudo bash -c "cat > /etc/tinyproxy/tinyproxy.conf" <<EOF
+User nobody
+Group nogroup
+Port 8888
+Timeout 600
+DefaultErrorFile "/usr/share/tinyproxy/default.html"
+StatFile "/usr/share/tinyproxy/stats.html"
+LogFile "/var/log/tinyproxy/tinyproxy.log"
+LogLevel Info
+PidFile "/var/run/tinyproxy/tinyproxy.pid"
+MaxClients 100
+MinSpareServers 5
+MaxSpareServers 20
+StartServers 10
+MaxRequestsPerChild 0
+ViaProxyName "tinyproxy"
+ConnectPort 443
+ConnectPort 80
+EOF
 
-# Remove the line from participant's profile
-if [ -f "/home/$PARTICIPANT_USER/.profile" ]; then
-    sudo sed -i '/source ~\/.participant_net.sh/d' /home/$PARTICIPANT_USER/.profile
-fi
+# Delete filter file
+sudo rm -f /etc/tinyproxy/filter
 
-# 4. Remove Squid configuration
-echo "4. Removing Squid proxy configuration..."
-sudo systemctl stop squid
-sudo systemctl disable squid
-
-# Restore original Squid configuration
-if [ -f "${SQUID_CONF_FILE}.backup" ]; then
-    sudo cp "${SQUID_CONF_FILE}.backup" "$SQUID_CONF_FILE"
-    sudo rm -f "${SQUID_CONF_FILE}.backup"
-else
-    echo "No Squid backup found. Proceeding with default configuration removal."
-fi
-
-# Remove allowed domains file
-sudo rm -f $SQUID_ALLOWED_DOMAINS_FILE
-
-# Remove SSL cert directory
-sudo rm -rf /var/lib/squid/ssl_cert
-
-# 5. Clean up firewall rules
-echo "5. Cleaning up iptables rules..."
-# Clean NAT table
-sudo iptables -t nat -F PREROUTING
-sudo iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -j MASQUERADE 2>/dev/null
-
-# Reset default policies in case they were changed
-sudo iptables -P INPUT ACCEPT
-sudo iptables -P FORWARD ACCEPT
-sudo iptables -P OUTPUT ACCEPT
-
-# 6. Remove virtual interfaces
-echo "6. Removing virtual interfaces..."
-sudo ip link delete veth0 2>/dev/null
-
-# 7. Remove AppArmor profile
-echo "7. Removing AppArmor profile for $PARTICIPANT_USER..."
+echo "3. Removing AppArmor profile..."
 sudo rm -f /etc/apparmor.d/user.$PARTICIPANT_USER
 sudo apparmor_parser -R /etc/apparmor.d/user.$PARTICIPANT_USER 2>/dev/null
 
-# 8. Remove udev rules for USB storage
-echo "8. Removing USB storage restrictions..."
-sudo rm -f $UDEV_RULE_FILE
+echo "4. Removing storage restrictions..."
+sudo rm -f /etc/udev/rules.d/99-block-usb-storage-participant.rules
+sudo systemctl stop block-external-storage.service
+sudo systemctl disable block-external-storage.service
+sudo rm -f /etc/systemd/system/block-external-storage.service
 
-# 9. Remove mount units and restrictions
-echo "9. Removing mount restrictions..."
-sudo systemctl stop media.mount 2>/dev/null
-sudo systemctl disable media.mount 2>/dev/null
-sudo rm -f /etc/systemd/system/media.mount
+# Unmount restricted directories
+sudo umount /media 2>/dev/null
+sudo umount /mnt 2>/dev/null
 
-# 10. Remove fstab entries
-echo "10. Cleaning fstab entries..."
-sudo sed -i '/Restrict access to external drives/d' /etc/fstab
-sudo sed -i '/tmpfs.*\/media.*tmpfs/d' /etc/fstab
-sudo sed -i '/tmpfs.*\/mnt.*tmpfs/d' /etc/fstab
+echo "5. Removing maintenance scripts..."
+sudo systemctl stop update-allowed-ips.timer
+sudo systemctl disable update-allowed-ips.timer
+sudo rm -f /etc/systemd/system/update-allowed-ips.timer
+sudo rm -f /etc/systemd/system/update-allowed-ips.service
+sudo rm -f /usr/local/bin/update-allowed-ips.sh
 
-# 11. Remove sudoers entry
-echo "11. Removing sudoers configuration..."
-sudo rm -f /etc/sudoers.d/participant-netns
-
-# 12. Clean up log directories
-echo "12. Cleaning up log files..."
-sudo rm -rf /var/log/participant-net
-sudo rm -rf /run/participant-net
-
-# 13. Apply all changes
-echo "13. Applying changes..."
+echo "6. Reloading system services..."
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 sudo systemctl daemon-reload
 
-echo "✅ Network namespace isolation removed."
-echo "✅ Squid proxy configuration restored."
-echo "✅ PAM configuration restored."
-echo "✅ Storage access restrictions removed."
-echo "✅ All user restrictions have been lifted for $PARTICIPANT_USER."
-echo "🎯 System restored to normal operation. Please reboot to ensure all changes take effect."
+# Save changes to iptables
+sudo netfilter-persistent save
+
+echo "✅ Internet restrictions removed."
+echo "✅ Storage restrictions removed."
+echo "✅ All maintenance scripts and services removed."
+echo "🎯 Restrictions have been removed - a reboot is recommended for full effect."
