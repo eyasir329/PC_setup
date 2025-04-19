@@ -417,65 +417,58 @@ echo "============================================"
 echo "✅ Backup Process Complete!"
 echo "============================================"
 
-#!/bin/bash
 
 echo "============================================"
 echo "Starting Step 13: Internet Access Restriction for Participant"
 echo "============================================"
 
-# Ensure UFW (Uncomplicated Firewall) is enabled
-sudo ufw enable || true
-echo "✅ UFW enabled."
+PARTICIPANT_USER="participant"
 
-# Reset existing rules to avoid conflicts
-sudo ufw reset
-echo "✅ UFW rules reset."
 
-# Default deny all outgoing traffic
-sudo ufw default deny outgoing
-echo "✅ Default outgoing traffic denied."
-
-# Allow outgoing traffic to specific competitive programming websites
-ALLOWED_SITES=(
-    "codeforces.com"
-    "codechef.com"
-    "atcoder.jp"
-    "vjudge.net"
-    "lightoj.com"
-    "hackerrank.com"
-    "hackerearth.com"
-    "uva.onlinejudge.org"
-    "cses.fi"
-    "spoj.com"
-    "top.hackerone.com"
-    "bapsoj.com"
+ALLOWED_DOMAINS=(
+    "codeforces.com" "codechef.com" "vjudge.net" "atcoder.jp"
+    "hackerrank.com" "hackerearth.com" "topcoder.com"
+    "spoj.com" "lightoj.com" "uva.onlinejudge.org"
+    "cses.fi" "bapsoj.com" "toph.co"
 )
 
-# Loop through each site and allow outgoing traffic
-for site in "${ALLOWED_SITES[@]}"; do
-    ip=$(dig +short "$site")
-    if [ -n "$ip" ]; then
-        sudo ufw allow out to "$ip"
-        echo "✅ Allowed outgoing traffic to $site ($ip)."
-    else
-        echo "⚠️ Could not resolve $site. Skipping."
-    fi
+# Install Squid
+echo "Installing Squid..."
+sudo apt update
+sudo apt install squid -y
+
+# Configure Squid for domain-based access control
+SQUID_CONF="/etc/squid/squid.conf"
+sudo cp $SQUID_CONF $SQUID_CONF.bak
+
+# Allow access to specific domains
+for domain in "${ALLOWED_DOMAINS[@]}"; do
+    echo "acl allowed_sites dstdomain .$domain" | sudo tee -a $SQUID_CONF
 done
 
-# Ensure that everything else is denied
-sudo ufw default deny outgoing
-echo "✅ Outgoing traffic for all other sites is blocked."
+# Deny access to all other websites
+sudo sed -i '/http_access deny all/i http_access allow allowed_sites' $SQUID_CONF
 
-# Enable and reload UFW to apply rules
-sudo ufw reload
-echo "✅ UFW rules applied successfully."
+# Set up ACL for participant user (replace with correct IP)
+sudo echo "acl participant src 192.168.1.100" | sudo tee -a $SQUID_CONF  # Replace with participant's IP or method
+sudo echo "http_access allow participant" | sudo tee -a $SQUID_CONF
 
-# Verify if UFW is active
-sudo ufw status verbose
-echo "✅ UFW status checked."
+# Deny all other access by default
+echo "http_access deny all" | sudo tee -a $SQUID_CONF
+
+# Restart Squid to apply changes
+sudo systemctl restart squid
+
+# Block storage devices for participant only
+echo "Blocking access to storage devices (USB, SSD, CD, etc.) for participant..."
+echo 'SUBSYSTEM=="block", ACTION=="add", ATTRS{idVendor}!="0781", ATTRS{idProduct}!="5591", RUN+="/usr/bin/logger Storage device blocked for participant"' | sudo tee /etc/udev/rules.d/99-block-storage-participant.rules
+echo 'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd*", ENV{ID_FS_TYPE}=="vfat|ntfs|exfat", RUN+="/usr/bin/test -e /dev/$name && /bin/mount --bind /dev/null /dev/$name"' | sudo tee -a /etc/udev/rules.d/99-block-storage-participant.rules
+
+# Reload udev rules to apply changes
+sudo udevadm control --reload-rules
 
 echo "============================================"
-echo "✅ Internet access restrictions applied for Participant."
+echo "✅ Internet access and storage device restrictions applied for participant."
 echo "============================================"
 
 
