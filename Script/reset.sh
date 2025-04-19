@@ -135,13 +135,18 @@ EXTENSIONS=(
 )
 
 for ext in "${EXTENSIONS[@]}"; do
-    echo "→ Installing extension: $ext for participant"
-    sudo -u participant code --install-extension "$ext" --force
-    if [ $? -eq 0 ]; then
-        echo "✅ Installed $ext successfully."
+    # Check if the extension is already installed
+    if sudo -u participant code --list-extensions | grep -q "$ext"; then
+        echo "✅ Extension $ext is already installed. Skipping installation."
     else
-        echo "❌ Failed to install $ext." >&2
-        exit 1
+        echo "→ Installing extension: $ext for participant"
+        sudo -u participant code --install-extension "$ext" --force
+        if [ $? -eq 0 ]; then
+            echo "✅ Installed $ext successfully."
+        else
+            echo "❌ Failed to install $ext." >&2
+            exit 1
+        fi
     fi
 done
 
@@ -152,4 +157,3 @@ echo "============================================"
 echo "============================================"
 echo "✅ Participant account has been reset successfully."
 echo "============================================"
-
