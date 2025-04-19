@@ -26,7 +26,7 @@ fi
 
 # 4. Restore backup
 echo "Restoring from backup..."
-sudo rsync -aAX /opt/participant_backup/ /home/participant/
+sudo rsync -aAX /opt/participant_backup/participant_home/ /home/participant/
 if [ $? -eq 0 ]; then
     echo "✅ Home directory restored."
 else
@@ -65,28 +65,84 @@ else
     exit 1
 fi
 
-# 8. Set permissions
+# 8. Set permissions and fix Code::Blocks setup
 echo "Setting permissions for participant's home..."
 sudo chown -R participant:participant /home/participant
 sudo chmod -R u+rwX /home/participant
 
-# Ensure participant can execute files from anywhere in their home directory
-find /home/participant -type f -name "*.out" -exec chmod +x {} \;
-find /home/participant -type f -name "*.exe" -exec chmod +x {} \;
+# Install additional package for ACL support if needed
+sudo apt install -y acl
 
-# 9. Create a writable directory for Code::Blocks projects (optional, if you want to set a default path)
+# Make sure participant is part of necessary groups
+sudo usermod -aG sudo,adm,dialout,cdrom,floppy,audio,dip,video,plugdev,netdev participant
+
+# Create Code::Blocks projects directory with proper permissions
 sudo -u participant mkdir -p /home/participant/cb_projects
 sudo chmod -R 755 /home/participant/cb_projects
 
-# Set a default project directory in Code::Blocks settings (if desired)
-# Assuming Code::Blocks config is stored in ~/.codeblocks/configurations.xml
-sed -i 's|<DefaultWorkspaceDir>.*</DefaultWorkspaceDir>|<DefaultWorkspaceDir>/home/participant/cb_projects</DefaultWorkspaceDir>|' /home/participant/.codeblocks/configurations.xml
+# Create common Code::Blocks output directories with proper permissions
+sudo -u participant mkdir -p /home/participant/cb_projects/bin
+sudo -u participant mkdir -p /home/participant/cb_projects/bin/Debug
+sudo -u participant mkdir -p /home/participant/cb_projects/bin/Release
+sudo chmod -R 755 /home/participant/cb_projects/bin
 
-# Optional: Add the participant's home directory to PATH for easy execution of compiled programs
-echo 'export PATH=$PATH:/home/participant' >> /home/participant/.bashrc
+# Set default umask for participant to ensure new files are executable
+if ! grep -q "umask 022" /home/participant/.bashrc; then
+    echo "umask 022" | sudo tee -a /home/participant/.bashrc
+fi
+if ! grep -q "umask 022" /home/participant/.profile; then
+    echo "umask 022" | sudo tee -a /home/participant/.profile
+fi
 
-# Ensure executable permission for new files (after Code::Blocks compilation, for example)
-echo "✅ Permissions and setup complete. Participant should be able to compile and run individual C++ files from anywhere in their home directory."
+# Ensure participant can execute files from anywhere in their home directory
+sudo find /home/participant -type f -name "*.out" -exec chmod +x {} \;
+sudo find /home/participant -type f -name "*.exe" -exec chmod +x {} \;
+sudo find /home/participant -type f -name "*.bin" -exec chmod +x {} \;
+sudo find /home/participant -path "*/bin/Debug/*" -type f -exec chmod +x {} \;
+sudo find /home/participant -path "*/bin/Release/*" -type f -exec chmod +x {} \;
+
+# Setup ACL to automatically grant execute permissions for new files in bin directories
+sudo setfacl -R -d -m u::rwx,g::rx,o::rx /home/participant/cb_projects/bin
+sudo setfacl -R -m u::rwx,g::rx,o::rx /home/participant/cb_projects/bin
+
+# Set proper permissions for Code::Blocks configuration directory
+sudo -u participant mkdir -p /home/participant/.config/codeblocks
+sudo chown -R participant:participant /home/participant/.config/codeblocks
+sudo chmod -R u+rwX /home/participant/.config/codeblocks
+
+# Ensure Code::Blocks has proper directory specified for output
+CONFIG_FILE="/home/participant/.config/codeblocks/default.conf"
+if [ -f "$CONFIG_FILE" ]; then
+    sudo -u participant sed -i 's|<default_compiler>.*</default_compiler>|<default_compiler>gnu_gcc_compiler</default_compiler>|' "$CONFIG_FILE"
+    sudo -u participant sed -i 's|<output_directory>.*</output_directory>|<output_directory>/home/participant/cb_projects/bin</output_directory>|' "$CONFIG_FILE"
+fi
+
+# Set safer default for executed programs in CodeBlocks
+sudo -u participant mkdir -p /home/participant/.config/codeblocks/share
+sudo chown -R participant:participant /home/participant/.config/codeblocks/share
+echo "[General]
+terminal_program=xterm
+terminal_cmd=xterm -T \$TITLE -e
+" | sudo -u participant tee /home/participant/.config/codeblocks/share/terminals.conf > /dev/null
+
+# Add a custom-compiled runner script for Code::Blocks executables
+echo '#!/bin/bash
+chmod +x "$@"
+"$@"
+' | sudo tee /usr/local/bin/codeblocks-run > /dev/null
+sudo chmod +x /usr/local/bin/codeblocks-run
+
+# Create a helpful alias for participant
+if ! grep -q "alias make-executable" /home/participant/.bashrc; then
+    echo 'alias make-executable="chmod +x"' | sudo tee -a /home/participant/.bashrc > /dev/null
+fi
+
+# Add participant's home directory to PATH for easy execution of compiled programs
+if ! grep -q "export PATH=\$PATH:/home/participant" /home/participant/.bashrc; then
+    echo 'export PATH=$PATH:/home/participant' >> /home/participant/.bashrc
+fi
+
+echo "✅ Permissions and Code::Blocks setup complete. Participant should now be able to compile and run programs."
 
 
 # Install PAM keyring helper if not present
