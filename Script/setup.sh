@@ -424,12 +424,21 @@ echo "============================================"
 
 PARTICIPANT_USER="participant"
 
-
+# List of allowed domains
 ALLOWED_DOMAINS=(
-    "codeforces.com" "codechef.com" "vjudge.net" "atcoder.jp"
-    "hackerrank.com" "hackerearth.com" "topcoder.com"
-    "spoj.com" "lightoj.com" "uva.onlinejudge.org"
-    "cses.fi" "bapsoj.com" "toph.co"
+    "codeforces.com"
+    "codechef.com"
+    "vjudge.net"
+    "atcoder.jp"
+    "hackerrank.com"
+    "hackerearth.com"
+    "topcoder.com"
+    "spoj.com"
+    "lightoj.com"
+    "uva.onlinejudge.org"
+    "cses.fi"
+    "bapsoj.com"
+    "toph.co"
 )
 
 # Install Squid
@@ -437,34 +446,61 @@ echo "Installing Squid..."
 sudo apt update
 sudo apt install squid -y
 
-# Configure Squid for domain-based access control
-SQUID_CONF="/etc/squid/squid.conf"
-sudo cp $SQUID_CONF $SQUID_CONF.bak
-
-# Allow access to specific domains
+# Create domain ACL file
+ACL_FILE="/etc/squid/allowed_sites.acl"
+echo "Creating domain ACL list..."
+sudo rm -f "$ACL_FILE"
 for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "acl allowed_sites dstdomain .$domain" | sudo tee -a $SQUID_CONF
+    echo ".$domain" | sudo tee -a "$ACL_FILE" > /dev/null
 done
 
-# Deny access to all other websites
-sudo sed -i '/http_access deny all/i http_access allow allowed_sites' $SQUID_CONF
+# Backup existing squid.conf
+SQUID_CONF="/etc/squid/squid.conf"
+SQUID_CONF_BACKUP="/etc/squid/squid.conf.bak"
+sudo cp "$SQUID_CONF" "$SQUID_CONF_BACKUP"
 
-# Set up ACL for participant user (replace with correct IP)
-sudo echo "acl participant src 192.168.1.100" | sudo tee -a $SQUID_CONF  # Replace with participant's IP or method
-sudo echo "http_access allow participant" | sudo tee -a $SQUID_CONF
+# Overwrite squid.conf with clean config
+echo "Updating squid.conf..."
 
-# Deny all other access by default
-echo "http_access deny all" | sudo tee -a $SQUID_CONF
+sudo tee "$SQUID_CONF" > /dev/null <<EOF
+# Squid configuration to allow access to specific domains only
 
-# Restart Squid to apply changes
+acl allowed_sites dstdomain "/etc/squid/allowed_sites.acl"
+http_access allow allowed_sites
+http_access deny all
+
+http_port 3128
+
+access_log /var/log/squid/access.log
+cache_log /var/log/squid/cache.log
+cache_store_log /var/log/squid/store.log
+EOF
+
+# Restart Squid
+echo "Restarting Squid..."
 sudo systemctl restart squid
 
-# Block storage devices for participant only
-echo "Blocking access to storage devices (USB, SSD, CD, etc.) for participant..."
-echo 'SUBSYSTEM=="block", ACTION=="add", ATTRS{idVendor}!="0781", ATTRS{idProduct}!="5591", RUN+="/usr/bin/logger Storage device blocked for participant"' | sudo tee /etc/udev/rules.d/99-block-storage-participant.rules
-echo 'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd*", ENV{ID_FS_TYPE}=="vfat|ntfs|exfat", RUN+="/usr/bin/test -e /dev/$name && /bin/mount --bind /dev/null /dev/$name"' | sudo tee -a /etc/udev/rules.d/99-block-storage-participant.rules
+# Check if Squid started correctly
+if systemctl is-active --quiet squid; then
+    echo "✅ Squid is running with domain restrictions."
+else
+    echo "❌ Squid failed to start. Check the config with:"
+    echo "    sudo systemctl status squid"
+    echo "    sudo journalctl -xeu squid"
+    exit 1
+fi
 
-# Reload udev rules to apply changes
+# USB block for participant user only (basic version)
+echo "Blocking USB access for participant..."
+
+UDEV_RULE_FILE="/etc/udev/rules.d/99-block-storage-participant.rules"
+
+sudo tee "$UDEV_RULE_FILE" > /dev/null <<EOF
+# Block USB storage for participant
+SUBSYSTEM=="usb", ATTR{product}=="*Storage*", ENV{ID_FS_TYPE}=="vfat|ntfs|exfat", RUN+="/usr/bin/logger Storage device blocked for participant"
+EOF
+
+# Reload udev
 sudo udevadm control --reload-rules
 
 echo "============================================"

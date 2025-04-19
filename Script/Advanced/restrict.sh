@@ -5,99 +5,108 @@ echo "Starting Internet Access and Storage Device Restriction for participant"
 echo "============================================"
 
 PARTICIPANT_USER="participant"
-
-# Allowed domains
 ALLOWED_DOMAINS=(
-    "codeforces.com" "codechef.com" "vjudge.net" "atcoder.jp"
-    "hackerrank.com" "hackerearth.com" "topcoder.com"
-    "spoj.com" "lightoj.com" "uva.onlinejudge.org"
-    "cses.fi" "bapsoj.com" "toph.co"
+    "codeforces.com"
+    "codechef.com"
+    "vjudge.net"
+    "atcoder.jp"
+    "hackerrank.com"
+    "hackerearth.com"
+    "topcoder.com"
+    "spoj.com"
+    "lightoj.com"
+    "uva.onlinejudge.org"
+    "cses.fi"
+    "bapsoj.com"
+    "toph.co"
 )
 
-# Install dnsmasq
-echo "Installing dnsmasq..."
+SQUID_CONF_FILE="/etc/squid/squid.conf"
+SQUID_ALLOWED_DOMAINS_FILE="/etc/squid/allowed_domains.txt"
+
+# 1. Install and configure Squid proxy
+echo "Installing Squid proxy server..."
 sudo apt update
-sudo apt install -y dnsmasq
+sudo apt install -y squid iptables-persistent
 
-# Stop and disable systemd-resolved to free up port 53
-echo "Stopping systemd-resolved to free up port 53..."
-sudo systemctl stop systemd-resolved
-sudo systemctl disable systemd-resolved
+# Backup existing Squid config
+echo "Backing up original Squid config..."
+sudo cp $SQUID_CONF_FILE "${SQUID_CONF_FILE}.backup"
 
-# Configure dnsmasq
-echo "Configuring dnsmasq for DNS filtering..."
-DNSMASQ_CONF="/etc/dnsmasq.conf"
-if ! grep -q "listen-address=127.0.0.1" "$DNSMASQ_CONF"; then
-    sudo bash -c 'echo "listen-address=127.0.0.1" >> /etc/dnsmasq.conf'
+# Configure allowed domains
+echo "Configuring allowed domains for Squid..."
+sudo bash -c "cat > $SQUID_ALLOWED_DOMAINS_FILE" <<EOF
+$(for domain in "${ALLOWED_DOMAINS[@]}"; do echo ".$domain"; done)
+EOF
+
+# Update Squid configuration
+echo "Updating Squid configuration..."
+sudo bash -c "cat > $SQUID_CONF_FILE" <<EOF
+# Ports
+http_port 3128
+
+# ACLs
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 443
+acl CONNECT method CONNECT
+
+acl allowed_sites dstdomain "/etc/squid/allowed_domains.txt"
+
+# Allow only access to allowed sites
+http_access allow CONNECT allowed_sites
+http_access allow allowed_sites
+
+# Deny all other access
+http_access deny all
+EOF
+
+# Restart Squid to apply changes
+echo "Restarting Squid service..."
+sudo systemctl restart squid
+sudo systemctl enable squid
+
+# 2. Setup iptables to force participant user traffic through Squid
+
+echo "Setting up iptables rules to force $PARTICIPANT_USER to use Squid proxy..."
+
+# Create a group for proxy users if it doesn't exist
+if ! getent group proxyusers > /dev/null; then
+    sudo groupadd proxyusers
 fi
-if ! grep -q "bind-interfaces" "$DNSMASQ_CONF"; then
-    sudo bash -c 'echo "bind-interfaces" >> /etc/dnsmasq.conf'
-fi
-# Add to block external DNS requests and prevent DNS leaks
-echo "no-resolv" | sudo tee -a "$DNSMASQ_CONF" > /dev/null
 
-# Add allowed domains to dnsmasq configuration
-echo "Creating DNS whitelist for allowed domains..."
-WHITELIST_FILE="/etc/dnsmasq.d/allowed_domains.conf"
-sudo bash -c ">$WHITELIST_FILE"
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "address=/$domain/127.0.0.1" | sudo tee -a "$WHITELIST_FILE" > /dev/null
-done
+# Add participant user to proxy group
+sudo usermod -aG proxyusers $PARTICIPANT_USER
 
-# Restart dnsmasq
-echo "Restarting dnsmasq..."
-sudo systemctl restart dnsmasq
-if systemctl is-active --quiet dnsmasq; then
-    echo "✅ dnsmasq is running and DNS filtering is active."
-else
-    echo "❌ dnsmasq failed to start. Check logs for details."
-    exit 1
-fi
+# Flush old rules
+sudo iptables -t nat -F
+sudo iptables -t mangle -F
 
-# Get IP addresses of the allowed domains
-echo "Resolving IP addresses for allowed domains..."
-ALLOWED_IPS=()
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    IP_ADDRESSES=$(dig +short "$domain" | tr '\n' ' ')
-    ALLOWED_IPS+=($IP_ADDRESSES)
-done
+# Mark participant's packets
+sudo iptables -t mangle -A OUTPUT -m owner --gid-owner proxyusers -p tcp --dport 80 -j MARK --set-mark 1
+sudo iptables -t mangle -A OUTPUT -m owner --gid-owner proxyusers -p tcp --dport 443 -j MARK --set-mark 1
 
-# Block all outgoing traffic for participant user except DNS (port 5353) and the IPs of allowed domains
-PARTICIPANT_UID=$(id -u $PARTICIPANT_USER)
-
-# Block all outgoing traffic for the participant user by default
-sudo iptables -A OUTPUT -m owner ! --uid-owner $PARTICIPANT_UID -j ACCEPT   # Allow all other users' internet access
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -j REJECT   # Block all other traffic for participant
-
-# Allow DNS traffic for participant user
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -p udp --dport 5353 -j ACCEPT   # Allow DNS traffic for participant
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -p tcp --dport 5353 -j ACCEPT   # Allow DNS traffic for participant
-
-# Allow outgoing traffic to IPs of the allowed domains
-for ip in "${ALLOWED_IPS[@]}"; do
-    sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -d "$ip" -j ACCEPT   # Allow traffic to whitelisted IPs
-done
+# Redirect marked packets to Squid
+sudo iptables -t nat -A OUTPUT -m mark --mark 1 -p tcp --dport 80 -j REDIRECT --to-port 3128
+sudo iptables -t nat -A OUTPUT -m mark --mark 1 -p tcp --dport 443 -j REDIRECT --to-port 3128
 
 # Save iptables rules
-sudo sh -c "iptables-save > /etc/iptables.rules"
+sudo netfilter-persistent save
 
-# Make persistent with systemd or rc.local
-if ! grep -q "iptables-restore < /etc/iptables.rules" /etc/rc.local 2>/dev/null; then
-    echo "Setting iptables rules to persist (rc.local)..."
-    sudo bash -c 'echo -e "#!/bin/bash\niptables-restore < /etc/iptables.rules\nexit 0" > /etc/rc.local'
-    sudo chmod +x /etc/rc.local
-fi
-
-# USB Storage Restriction for Participant User
-echo "Blocking USB storage devices (pen drives, SSDs, memory cards) for participant..."
+# 3. Restrict USB storage for participant
+echo "Blocking USB storage devices (pen drives, SSDs) for $PARTICIPANT_USER..."
 
 UDEV_RULE_FILE="/etc/udev/rules.d/99-block-usb-storage-participant.rules"
 sudo bash -c "cat > $UDEV_RULE_FILE" <<EOF
-# Block USB storage devices (pen drives, SSDs, memory cards) for participant user
-ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]", ENV{ID_BUS}=="usb", ENV{ID_USB_DRIVER}=="usb-storage", RUN+="/usr/bin/logger USB storage device blocked for $PARTICIPANT_USER"
+# Block USB storage for 'participant'
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]", ENV{ID_BUS}=="usb", ENV{ID_USB_DRIVER}=="usb-storage", ENV{USER}=="$PARTICIPANT_USER", RUN+="/usr/bin/logger USB storage device blocked for $PARTICIPANT_USER"
 EOF
-sudo udevadm control --reload-rules
 
-echo "============================================"
-echo "✅ Internet and USB storage restrictions successfully applied to participant."
-echo "============================================"
+# Reload udev rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+
+echo "✅ Squid proxy installed and configured."
+echo "✅ Internet restricted for 'participant' except allowed sites."
+echo "✅ USB storage devices blocked for 'participant'."
+echo "🎯 Setup complete."
