@@ -1,36 +1,58 @@
 #!/bin/bash
 
 echo "============================================"
-echo "Reverting Internet Access and Storage Device Restrictions"
+echo "Removing Internet and USB storage restrictions for participant"
 echo "============================================"
 
-# Define the participant's username
 PARTICIPANT_USER="participant"
+PARTICIPANT_UID=$(id -u "$PARTICIPANT_USER")
 
-# Remove Squid configuration
-echo "Removing Squid configuration for domain-based access control..."
-sudo rm -f /etc/squid/squid.conf
+# -------------------------------
+# Restore full Internet Access
+# -------------------------------
 
-# Reinstall the original Squid configuration
-echo "Restoring the original Squid configuration..."
-sudo cp /etc/squid/squid.conf.bak /etc/squid/squid.conf
+echo "Removing iptables rules for participant..."
+# Flush all rules (safe since we're customizing only OUTPUT rules)
+sudo iptables -F OUTPUT
 
-# Restart Squid to apply the original config
-sudo systemctl restart squid
+# Save clean iptables
+sudo sh -c "iptables-save > /etc/iptables.rules"
 
-# Remove the udev rule for blocking storage devices for participant
-echo "Removing udev rule for blocking storage devices for participant..."
-sudo rm -f /etc/udev/rules.d/99-block-storage-participant.rules
+# Disable iptables restore via rc.local (if present)
+if grep -q "iptables-restore < /etc/iptables.rules" /etc/rc.local 2>/dev/null; then
+    echo "Disabling rc.local iptables restoration..."
+    sudo sed -i '/iptables-restore < \/etc\/iptables.rules/d' /etc/rc.local
+fi
 
-# Reload udev rules to apply the changes
-sudo udevadm control --reload-rules
+# -------------------------------
+# Remove dnsmasq DNS Filtering
+# -------------------------------
 
-# Remove Squid package if no longer needed
-echo "Uninstalling Squid..."
-sudo apt-get remove --purge squid -y
-sudo apt-get autoremove -y
+echo "Removing dnsmasq DNS filtering..."
+sudo systemctl stop dnsmasq
+sudo systemctl disable dnsmasq
+
+# Restore systemd-resolved
+echo "Restoring systemd-resolved..."
+sudo systemctl enable systemd-resolved
+sudo systemctl start systemd-resolved
+
+# Remove dnsmasq config changes
+sudo sed -i '/listen-address=127.0.0.1/d' /etc/dnsmasq.conf
+sudo sed -i '/bind-interfaces/d' /etc/dnsmasq.conf
+sudo rm -f /etc/dnsmasq.d/allowed_domains.conf
+
+# -------------------------------
+# Remove USB Storage Restrictions
+# -------------------------------
+
+UDEV_RULE_FILE="/etc/udev/rules.d/99-block-usb-storage-participant.rules"
+if [ -f "$UDEV_RULE_FILE" ]; then
+    echo "Removing USB block udev rule..."
+    sudo rm "$UDEV_RULE_FILE"
+    sudo udevadm control --reload-rules
+fi
 
 echo "============================================"
-echo "✅ Internet access and storage device restrictions have been reverted."
+echo "✅ All restrictions for participant have been removed."
 echo "============================================"
-

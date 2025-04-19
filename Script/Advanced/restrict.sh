@@ -33,6 +33,8 @@ fi
 if ! grep -q "bind-interfaces" "$DNSMASQ_CONF"; then
     sudo bash -c 'echo "bind-interfaces" >> /etc/dnsmasq.conf'
 fi
+# Add to block external DNS requests and prevent DNS leaks
+echo "no-resolv" | sudo tee -a "$DNSMASQ_CONF" > /dev/null
 
 # Add allowed domains to dnsmasq configuration
 echo "Creating DNS whitelist for allowed domains..."
@@ -52,15 +54,29 @@ else
     exit 1
 fi
 
-# Redirect traffic from participant to use dnsmasq for DNS
-echo "Redirecting DNS traffic for participant user only..."
+# Get IP addresses of the allowed domains
+echo "Resolving IP addresses for allowed domains..."
+ALLOWED_IPS=()
+for domain in "${ALLOWED_DOMAINS[@]}"; do
+    IP_ADDRESSES=$(dig +short "$domain" | tr '\n' ' ')
+    ALLOWED_IPS+=($IP_ADDRESSES)
+done
+
+# Block all outgoing traffic for participant user except DNS (port 5353) and the IPs of allowed domains
 PARTICIPANT_UID=$(id -u $PARTICIPANT_USER)
 
-# Block all outgoing traffic for the participant user and only allow DNS to local dnsmasq server (port 5353)
+# Block all outgoing traffic for the participant user by default
 sudo iptables -A OUTPUT -m owner ! --uid-owner $PARTICIPANT_UID -j ACCEPT   # Allow all other users' internet access
+sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -j REJECT   # Block all other traffic for participant
+
+# Allow DNS traffic for participant user
 sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -p udp --dport 5353 -j ACCEPT   # Allow DNS traffic for participant
 sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -p tcp --dport 5353 -j ACCEPT   # Allow DNS traffic for participant
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -j REJECT   # Block all other traffic for participant
+
+# Allow outgoing traffic to IPs of the allowed domains
+for ip in "${ALLOWED_IPS[@]}"; do
+    sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_UID -d "$ip" -j ACCEPT   # Allow traffic to whitelisted IPs
+done
 
 # Save iptables rules
 sudo sh -c "iptables-save > /etc/iptables.rules"
