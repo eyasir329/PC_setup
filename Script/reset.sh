@@ -35,7 +35,6 @@ echo "✅ Internet access and storage device restrictions have been reverted."
 echo "============================================"
 
 
-
 echo "============================================"
 echo "Resetting participant account to default..."
 echo "============================================"
@@ -121,7 +120,29 @@ sed -i 's|<DefaultWorkspaceDir>.*</DefaultWorkspaceDir>|<DefaultWorkspaceDir>/ho
 # Optional: Add the participant's home directory to PATH for easy execution of compiled programs
 echo 'export PATH=$PATH:/home/participant' >> /home/participant/.bashrc
 
-# 10. Install VS Code Extensions and Browser Add-ons
+# Ensure executable permission for new files (after Code::Blocks compilation, for example)
+echo "✅ Permissions and setup complete. Participant should be able to compile and run individual C++ files from anywhere in their home directory."
+
+
+# Install PAM keyring helper if not present
+sudo apt install -y libpam-gnome-keyring
+
+# Add PAM lines if not already present
+if ! grep -q "pam_gnome_keyring.so" /etc/pam.d/common-auth; then
+    echo "auth optional pam_gnome_keyring.so" | sudo tee -a /etc/pam.d/common-auth
+fi
+
+if ! grep -q "pam_gnome_keyring.so auto_start" /etc/pam.d/common-session; then
+    echo "session optional pam_gnome_keyring.so auto_start" | sudo tee -a /etc/pam.d/common-session
+fi
+
+# Clear existing keyring files
+sudo -u participant rm -f /home/participant/.local/share/keyrings/*
+
+# Pre-create a blank keyring if needed (interactive part not scriptable without security compromise)
+echo "✅ Keyring configuration fixed. You may still need to run VS Code once under participant to complete silent keyring setup."
+
+
 echo "============================================"
 echo "Starting Installing VS Code Extensions"
 echo "============================================"
