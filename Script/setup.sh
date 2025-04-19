@@ -266,15 +266,21 @@ EXTENSIONS=(
 )
 
 for ext in "${EXTENSIONS[@]}"; do
-    echo "→ Installing extension: $ext for participant"
-    sudo -u participant code --install-extension "$ext" --force
-    if [ $? -eq 0 ]; then
-        echo "✅ Installed $ext successfully."
+    # Check if the extension is already installed
+    if sudo -u participant code --list-extensions | grep -q "$ext"; then
+        echo "✅ Extension $ext is already installed. Skipping installation."
     else
-        echo "❌ Failed to install $ext." >&2
-        exit 1
+        echo "→ Installing extension: $ext for participant"
+        sudo -u participant code --install-extension "$ext" --force
+        if [ $? -eq 0 ]; then
+            echo "✅ Installed $ext successfully."
+        else
+            echo "❌ Failed to install $ext." >&2
+            exit 1
+        fi
     fi
 done
+
 
 echo "============================================"
 echo "✅ VS Code extensions installed."
@@ -282,7 +288,30 @@ echo "============================================"
 
 
 echo "============================================"
-echo "Starting Step 8: Set Permissions for Participant"
+echo "Step 8: Fix VS Code Keyring Popup for Participant"
+echo "============================================"
+
+# Install PAM keyring helper if not present
+sudo apt install -y libpam-gnome-keyring
+
+# Add PAM lines if not already present
+if ! grep -q "pam_gnome_keyring.so" /etc/pam.d/common-auth; then
+    echo "auth optional pam_gnome_keyring.so" | sudo tee -a /etc/pam.d/common-auth
+fi
+
+if ! grep -q "pam_gnome_keyring.so auto_start" /etc/pam.d/common-session; then
+    echo "session optional pam_gnome_keyring.so auto_start" | sudo tee -a /etc/pam.d/common-session
+fi
+
+# Clear existing keyring files
+sudo -u participant rm -f /home/participant/.local/share/keyrings/*
+
+# Pre-create a blank keyring if needed (interactive part not scriptable without security compromise)
+echo "✅ Keyring configuration fixed. You may still need to run VS Code once under participant to complete silent keyring setup."
+
+
+echo "============================================"
+echo "Starting Step 9: Set Permissions for Participant"
 echo "============================================"
 
 # Set full ownership and permissions for participant's home
@@ -297,10 +326,35 @@ else
     exit 1
 fi
 
+# Ensure participant has proper permissions for their home directory and Code::Blocks output directory
+echo "🔧 Fixing permissions for participant's home directory and Code::Blocks output..."
 
-# 9. Disable automatic updates
+# Set permissions for the participant's home directory
+sudo chmod -R u+rwX /home/participant
+sudo chown -R participant:participant /home/participant
+
+# Ensure the participant can execute files from anywhere in their home directory
+find /home/participant -type f -name "*.out" -exec chmod +x {} \;
+find /home/participant -type f -name "*.exe" -exec chmod +x {} \;
+
+# Create a writable directory for Code::Blocks projects (optional, if you want to set a default path)
+sudo -u participant mkdir -p /home/participant/cb_projects
+sudo chmod -R 755 /home/participant/cb_projects
+
+# Set a default project directory in Code::Blocks settings (if desired)
+# Assuming Code::Blocks config is stored in ~/.codeblocks/configurations.xml
+sed -i 's|<DefaultWorkspaceDir>.*</DefaultWorkspaceDir>|<DefaultWorkspaceDir>/home/participant/cb_projects</DefaultWorkspaceDir>|' /home/participant/.codeblocks/configurations.xml
+
+# Optional: Add the participant's home directory to PATH for easy execution of compiled programs
+echo 'export PATH=$PATH:/home/participant' >> /home/participant/.bashrc
+
+# Ensure executable permission for new files (after Code::Blocks compilation, for example)
+echo "✅ Permissions and setup complete. Participant should be able to compile and run individual C++ files from anywhere in their home directory."
+
+
+
 echo "============================================"
-echo "Starting Step 9: Disable Automatic Updates"
+echo "Starting Step 10: Disable Automatic Updates"
 echo "============================================"
 
 # Stop the automatic update services
@@ -317,9 +371,9 @@ else
     exit 1
 fi
 
-# 10. Clean up unnecessary packages
+
 echo "============================================"
-echo "Starting Step 10: Clean Up"
+echo "Starting Step 11: Clean Up"
 echo "============================================"
 
 # Remove unnecessary packages and dependencies
@@ -333,9 +387,9 @@ else
     exit 1
 fi
 
-# 11. Backup participant's home directory (clean state)
+
 echo "============================================"
-echo "Starting Step 11: Backup Participant's Home (Initial Clean State)"
+echo "Starting Step 12: Backup Participant's Home (Initial Clean State)"
 echo "============================================"
 
 # Ensure the backup directory exists
@@ -363,73 +417,66 @@ echo "============================================"
 echo "✅ Backup Process Complete!"
 echo "============================================"
 
-
+#!/bin/bash
 
 echo "============================================"
-echo "Starting Internet Access and Storage Device Restriction"
+echo "Starting Step 13: Internet Access Restriction for Participant"
 echo "============================================"
 
-# Define the participant's username
-PARTICIPANT_USER="participant"
+# Ensure UFW (Uncomplicated Firewall) is enabled
+sudo ufw enable || true
+echo "✅ UFW enabled."
 
-# List of allowed domains
-ALLOWED_DOMAINS=(
-    "codeforces.com" "codechef.com" "vjudge.net" "atcoder.jp"
-    "hackerrank.com" "hackerearth.com" "topcoder.com"
-    "spoj.com" "lightoj.com" "uva.onlinejudge.org"
-    "cses.fi" "bapsoj.com" "toph.co"
+# Reset existing rules to avoid conflicts
+sudo ufw reset
+echo "✅ UFW rules reset."
+
+# Default deny all outgoing traffic
+sudo ufw default deny outgoing
+echo "✅ Default outgoing traffic denied."
+
+# Allow outgoing traffic to specific competitive programming websites
+ALLOWED_SITES=(
+    "codeforces.com"
+    "codechef.com"
+    "atcoder.jp"
+    "vjudge.net"
+    "lightoj.com"
+    "hackerrank.com"
+    "hackerearth.com"
+    "uva.onlinejudge.org"
+    "cses.fi"
+    "spoj.com"
+    "top.hackerone.com"
+    "bapsoj.com"
 )
 
-# Flush existing OUTPUT chain rules and set default policy to DROP
-# Only apply this to the participant user by using the --uid-owner option
-echo "Flushing existing iptables rules and setting default policy to DROP..."
-sudo iptables -F OUTPUT
-sudo iptables -P OUTPUT ACCEPT  # Allow all users to use the network by default
-
-# Set the policy to DROP for the participant user
-echo "Applying DROP policy for participant..."
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -j DROP
-
-# Allow localhost communication (e.g., localhost) for the participant
-echo "Allowing localhost communication for the participant..."
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d 127.0.0.1 -j ACCEPT
-
-# Resolve and allow access for specific allowed domains (using dnsmasq)
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "→ Resolving $domain using local DNS..."
-
-    # Resolve domain via local DNS (dnsmasq)
-    IP_LIST_IPV4=$(dig +short $domain)
-    
-    if [ -z "$IP_LIST_IPV4" ]; then
-        echo "❌ Could not resolve $domain — skipping."
-        continue
+# Loop through each site and allow outgoing traffic
+for site in "${ALLOWED_SITES[@]}"; do
+    ip=$(dig +short "$site")
+    if [ -n "$ip" ]; then
+        sudo ufw allow out to "$ip"
+        echo "✅ Allowed outgoing traffic to $site ($ip)."
+    else
+        echo "⚠️ Could not resolve $site. Skipping."
     fi
-
-    # Allow access for each resolved IPv4 address
-    for ip in $IP_LIST_IPV4; do
-        echo "→ Allowing participant to access $domain (IPv4: $ip)..."
-        sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d "$ip" -j ACCEPT
-    done
-
-    echo "✅ Allowed $domain (IPv4: $IP_LIST_IPV4)"
 done
 
-# Block storage devices (USB, SSD, CD, etc.), but allow keyboard and mouse for participant only
-echo "Blocking access to storage devices (USB, SSD, CD, etc.) for participant..."
-echo 'SUBSYSTEM=="block", ACTION=="add", ATTRS{idVendor}!="0781", ATTRS{idProduct}!="5591", RUN+="/usr/bin/logger Storage device blocked for participant"' | sudo tee /etc/udev/rules.d/99-block-storage-participant.rules
-sudo udevadm control --reload-rules
+# Ensure that everything else is denied
+sudo ufw default deny outgoing
+echo "✅ Outgoing traffic for all other sites is blocked."
 
-# Save iptables rules to ensure persistence after reboot
-echo "Saving iptables rules to ensure persistence after reboot..."
-sudo apt-get install iptables-persistent
-sudo netfilter-persistent save
-sudo netfilter-persistent reload
+# Enable and reload UFW to apply rules
+sudo ufw reload
+echo "✅ UFW rules applied successfully."
+
+# Verify if UFW is active
+sudo ufw status verbose
+echo "✅ UFW status checked."
 
 echo "============================================"
-echo "✅ Internet access and storage device restrictions applied for participant."
+echo "✅ Internet access restrictions applied for Participant."
 echo "============================================"
-
 
 
 # Final step: print out that setup is complete

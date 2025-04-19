@@ -1,62 +1,39 @@
 #!/bin/bash
 
 echo "============================================"
-echo "Removing Internet Access and Storage Device Restrictions"
+echo "Undoing Restrictions Before Resetting Participant Account"
 echo "============================================"
+
+# Undo internet access and storage device restrictions
 
 # Define the participant's username
 PARTICIPANT_USER="participant"
 
-# Remove iptables rules for the participant user
-echo "Removing iptables rules for participant..."
-sudo iptables -D OUTPUT -m owner --uid-owner $PARTICIPANT_USER -j DROP
-sudo iptables -D OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d 127.0.0.1 -j ACCEPT
+# Remove Squid configuration
+echo "Removing Squid configuration for domain-based access control..."
+sudo rm -f /etc/squid/squid.conf
 
-# Flush all iptables rules and set default policies to ACCEPT (reverting to default behavior)
-echo "Restoring default iptables policies..."
-sudo iptables -F OUTPUT
-sudo iptables -P OUTPUT ACCEPT
+# Reinstall the original Squid configuration
+echo "Restoring the original Squid configuration..."
+sudo cp /etc/squid/squid.conf.bak /etc/squid/squid.conf
 
-# Resolve and allow access for all previously allowed domains (using dnsmasq)
-ALLOWED_DOMAINS=(
-    "codeforces.com" "codechef.com" "vjudge.net" "atcoder.jp"
-    "hackerrank.com" "hackerearth.com" "topcoder.com"
-    "spoj.com" "lightoj.com" "uva.onlinejudge.org"
-    "cses.fi" "bapsoj.com" "toph.co"
-)
+# Restart Squid to apply the original config
+sudo systemctl restart squid
 
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "→ Resolving $domain using local DNS..."
-
-    # Resolve domain via local DNS (dnsmasq)
-    IP_LIST_IPV4=$(dig +short $domain)
-    
-    if [ -z "$IP_LIST_IPV4" ]; then
-        echo "❌ Could not resolve $domain — skipping."
-        continue
-    fi
-
-    # Allow access for each resolved IPv4 address
-    for ip in $IP_LIST_IPV4; do
-        echo "→ Allowing participant to access $domain (IPv4: $ip)..."
-        sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d "$ip" -j ACCEPT
-    done
-
-    echo "✅ Allowed $domain (IPv4: $IP_LIST_IPV4)"
-done
-
-# Remove the udev rule blocking storage devices for the participant
-echo "Removing udev storage device blocking rule for participant..."
+# Remove the udev rule for blocking storage devices for participant
+echo "Removing udev rule for blocking storage devices for participant..."
 sudo rm -f /etc/udev/rules.d/99-block-storage-participant.rules
+
+# Reload udev rules to apply the changes
 sudo udevadm control --reload-rules
 
-# Save the changes to iptables
-echo "Saving iptables rules after removing restrictions..."
-sudo netfilter-persistent save
-sudo netfilter-persistent reload
+# Remove Squid package if no longer needed
+echo "Uninstalling Squid..."
+sudo apt-get remove --purge squid -y
+sudo apt-get autoremove -y
 
 echo "============================================"
-echo "✅ Internet access and storage device restrictions removed for participant."
+echo "✅ Internet access and storage device restrictions have been reverted."
 echo "============================================"
 
 echo "============================================"
@@ -129,7 +106,22 @@ echo "Setting permissions for participant's home..."
 sudo chown -R participant:participant /home/participant
 sudo chmod -R u+rwX /home/participant
 
-# 9. Install VS Code Extensions and Browser Add-ons
+# Ensure participant can execute files from anywhere in their home directory
+find /home/participant -type f -name "*.out" -exec chmod +x {} \;
+find /home/participant -type f -name "*.exe" -exec chmod +x {} \;
+
+# 9. Create a writable directory for Code::Blocks projects (optional, if you want to set a default path)
+sudo -u participant mkdir -p /home/participant/cb_projects
+sudo chmod -R 755 /home/participant/cb_projects
+
+# Set a default project directory in Code::Blocks settings (if desired)
+# Assuming Code::Blocks config is stored in ~/.codeblocks/configurations.xml
+sed -i 's|<DefaultWorkspaceDir>.*</DefaultWorkspaceDir>|<DefaultWorkspaceDir>/home/participant/cb_projects</DefaultWorkspaceDir>|' /home/participant/.codeblocks/configurations.xml
+
+# Optional: Add the participant's home directory to PATH for easy execution of compiled programs
+echo 'export PATH=$PATH:/home/participant' >> /home/participant/.bashrc
+
+# 10. Install VS Code Extensions and Browser Add-ons
 echo "============================================"
 echo "Starting Installing VS Code Extensions"
 echo "============================================"
@@ -156,73 +148,6 @@ done
 echo "============================================"
 echo "✅ VS Code extensions installed."
 echo "============================================"
-
-
-echo "============================================"
-echo "Starting Internet Access and Storage Device Restriction"
-echo "============================================"
-
-# Define the participant's username
-PARTICIPANT_USER="participant"
-
-# List of allowed domains
-ALLOWED_DOMAINS=(
-    "codeforces.com" "codechef.com" "vjudge.net" "atcoder.jp"
-    "hackerrank.com" "hackerearth.com" "topcoder.com"
-    "spoj.com" "lightoj.com" "uva.onlinejudge.org"
-    "cses.fi" "bapsoj.com" "toph.co"
-)
-
-# Flush existing OUTPUT chain rules and set default policy to DROP
-# Only apply this to the participant user by using the --uid-owner option
-echo "Flushing existing iptables rules and setting default policy to DROP..."
-sudo iptables -F OUTPUT
-sudo iptables -P OUTPUT ACCEPT  # Allow all users to use the network by default
-
-# Set the policy to DROP for the participant user
-echo "Applying DROP policy for participant..."
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -j DROP
-
-# Allow localhost communication (e.g., localhost) for the participant
-echo "Allowing localhost communication for the participant..."
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d 127.0.0.1 -j ACCEPT
-
-# Resolve and allow access for specific allowed domains (using dnsmasq)
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "→ Resolving $domain using local DNS..."
-
-    # Resolve domain via local DNS (dnsmasq)
-    IP_LIST_IPV4=$(dig +short $domain)
-    
-    if [ -z "$IP_LIST_IPV4" ]; then
-        echo "❌ Could not resolve $domain — skipping."
-        continue
-    fi
-
-    # Allow access for each resolved IPv4 address
-    for ip in $IP_LIST_IPV4; do
-        echo "→ Allowing participant to access $domain (IPv4: $ip)..."
-        sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d "$ip" -j ACCEPT
-    done
-
-    echo "✅ Allowed $domain (IPv4: $IP_LIST_IPV4)"
-done
-
-# Block storage devices (USB, SSD, CD, etc.), but allow keyboard and mouse for participant only
-echo "Blocking access to storage devices (USB, SSD, CD, etc.) for participant..."
-echo 'SUBSYSTEM=="block", ACTION=="add", ATTRS{idVendor}!="0781", ATTRS{idProduct}!="5591", RUN+="/usr/bin/logger Storage device blocked for participant"' | sudo tee /etc/udev/rules.d/99-block-storage-participant.rules
-sudo udevadm control --reload-rules
-
-# Save iptables rules to ensure persistence after reboot
-echo "Saving iptables rules to ensure persistence after reboot..."
-sudo apt-get install iptables-persistent
-sudo netfilter-persistent save
-sudo netfilter-persistent reload
-
-echo "============================================"
-echo "✅ Internet access and storage device restrictions applied for participant."
-echo "============================================"
-
 
 echo "============================================"
 echo "✅ Participant account has been reset successfully."

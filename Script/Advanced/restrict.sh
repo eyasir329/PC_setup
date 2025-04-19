@@ -15,51 +15,40 @@ ALLOWED_DOMAINS=(
     "cses.fi" "bapsoj.com" "toph.co"
 )
 
-# Flush existing OUTPUT chain rules and set default policy to DROP
-# Only apply this to the participant user by using the --uid-owner option
-echo "Flushing existing iptables rules and setting default policy to DROP..."
-sudo iptables -F OUTPUT
-sudo iptables -P OUTPUT ACCEPT  # Allow all users to use the network by default
+# Install Squid
+echo "Installing Squid..."
+sudo apt update
+sudo apt install squid -y
 
-# Set the policy to DROP for the participant user
-echo "Applying DROP policy for participant..."
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -j DROP
+# Configure Squid for domain-based access control
+SQUID_CONF="/etc/squid/squid.conf"
+sudo cp $SQUID_CONF $SQUID_CONF.bak
 
-# Allow localhost communication (e.g., localhost) for the participant
-echo "Allowing localhost communication for the participant..."
-sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d 127.0.0.1 -j ACCEPT
-
-# Resolve and allow access for specific allowed domains (using dnsmasq)
+# Allow access to specific domains
 for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "→ Resolving $domain using local DNS..."
-
-    # Resolve domain via local DNS (dnsmasq)
-    IP_LIST_IPV4=$(dig +short $domain)
-    
-    if [ -z "$IP_LIST_IPV4" ]; then
-        echo "❌ Could not resolve $domain — skipping."
-        continue
-    fi
-
-    # Allow access for each resolved IPv4 address
-    for ip in $IP_LIST_IPV4; do
-        echo "→ Allowing participant to access $domain (IPv4: $ip)..."
-        sudo iptables -A OUTPUT -m owner --uid-owner $PARTICIPANT_USER -d "$ip" -j ACCEPT
-    done
-
-    echo "✅ Allowed $domain (IPv4: $IP_LIST_IPV4)"
+    echo "acl allowed_sites dstdomain .$domain" | sudo tee -a $SQUID_CONF
 done
 
-# Block storage devices (USB, SSD, CD, etc.), but allow keyboard and mouse for participant only
+# Deny access to all other websites
+sudo sed -i '/http_access deny all/i http_access allow allowed_sites' $SQUID_CONF
+
+# Set up ACL for participant user (replace with correct IP)
+sudo echo "acl participant src 192.168.1.100" | sudo tee -a $SQUID_CONF  # Replace with participant's IP or method
+sudo echo "http_access allow participant" | sudo tee -a $SQUID_CONF
+
+# Deny all other access by default
+echo "http_access deny all" | sudo tee -a $SQUID_CONF
+
+# Restart Squid to apply changes
+sudo systemctl restart squid
+
+# Block storage devices for participant only
 echo "Blocking access to storage devices (USB, SSD, CD, etc.) for participant..."
 echo 'SUBSYSTEM=="block", ACTION=="add", ATTRS{idVendor}!="0781", ATTRS{idProduct}!="5591", RUN+="/usr/bin/logger Storage device blocked for participant"' | sudo tee /etc/udev/rules.d/99-block-storage-participant.rules
-sudo udevadm control --reload-rules
+echo 'ACTION=="add", SUBSYSTEM=="block", KERNEL=="sd*", ENV{ID_FS_TYPE}=="vfat|ntfs|exfat", RUN+="/usr/bin/test -e /dev/$name && /bin/mount --bind /dev/null /dev/$name"' | sudo tee -a /etc/udev/rules.d/99-block-storage-participant.rules
 
-# Save iptables rules to ensure persistence after reboot
-echo "Saving iptables rules to ensure persistence after reboot..."
-sudo apt-get install iptables-persistent
-sudo netfilter-persistent save
-sudo netfilter-persistent reload
+# Reload udev rules to apply changes
+sudo udevadm control --reload-rules
 
 echo "============================================"
 echo "✅ Internet access and storage device restrictions applied for participant."
