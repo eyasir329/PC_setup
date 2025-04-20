@@ -75,14 +75,27 @@ fi
 echo "[2] Resolving and adding domain IPs to $IPSET"
 for d in "${DOMAINS[@]}"; do
   echo "   → $d"
-  getent ahosts "$d" \
-    | awk '$3=="STREAM" && $1 ~ /^[0-9.]+$/{print $1}' \
-    | sort -u \
-    | while read -r ip; do
-        echo "      · $ip"
-        ipset add "$IPSET" "$ip" || echo "[!] Failed to add $ip"
-      done
+  # temporarily disable errexit so a failed getent doesn't kill the script
+  set +e
+  mapfile -t ips < <(
+    getent ahosts "$d" 2>/dev/null \
+      | awk '$3=="STREAM" && $1 ~ /^[0-9.]+$/{print $1}' \
+      | sort -u
+  )
+  set -e
+
+  if (( ${#ips[@]} == 0 )); then
+    echo "      [!] no IPs found for $d, skipping"
+    continue
+  fi
+
+  for ip in "${ips[@]}"; do
+    echo "      · $ip"
+    ipset add "$IPSET" "$ip" \
+      || echo "      [!] Failed to add $ip"
+  done
 done
+
 
 # 3) rebuild iptables chain
 echo "[3] Rebuilding iptables chain $CHAIN"
