@@ -42,11 +42,11 @@ if [[ -f "$CRON_FILE" ]]; then
   rm -f "$CRON_FILE"
 fi
 
-# 5) remove polkit rule
+# 5) remove Polkit rule
 if [[ -f "$PKLA_FILE" ]]; then
   echo "[5] Removing Polkit rule"
   rm -f "$PKLA_FILE"
-  systemctl reload polkit.service &>/dev/null || echo "    ! Could not reload polkit, please reboot."
+  systemctl reload polkit.service &>/dev/null || echo "    ! Could not reload polkit—please reboot."
 fi
 
 # 6) remove udev rule

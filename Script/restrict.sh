@@ -66,7 +66,11 @@ fi
 echo "[2] Resolving and adding domain IPs to $IPSET"
 for d in "${DOMAINS[@]}"; do
   echo "   → $d"
-  mapfile -t ips < <(dig +short A "$d" 2>/dev/null | sort -u)
+  mapfile -t ips < <(
+    dig +short A "$d" 2>/dev/null \
+      | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
+      | sort -u
+  )
   if (( ${#ips[@]} == 0 )); then
     echo "      [!] no A records found, skipping"
     continue
@@ -85,7 +89,6 @@ iptables -t filter -N "$CHAIN"
 
 # hook chain to OUTPUT for participant
 if ! iptables -t filter -C OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" &>/dev/null; then
-  echo "[3] Hooking $CHAIN into OUTPUT for UID $UID_PARTICIPANT"
   iptables -t filter -I OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
 fi
 
@@ -121,7 +124,7 @@ else
   echo "    · Cron job already present."
 fi
 
-# 9) block all mount attempts via Polkit
+# 9) block mount attempts via Polkit
 PKLA_DIR="/etc/polkit-1/localauthority/50-local.d"
 PKLA_FILE="$PKLA_DIR/disable-participant-mount.pkla"
 echo "[9] Ensuring Polkit block in $PKLA_FILE"
