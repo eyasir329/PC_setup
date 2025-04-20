@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+echo "Step 0: Ensure script is executable"
+SCRIPT_PATH=$(readlink -f "$0")
+chmod +x "$SCRIPT_PATH"
+
 echo "============================================"
 echo " Starting Participant Restrict: $(date)"
 echo "============================================"
@@ -87,13 +92,22 @@ iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A "$CHAIN" -j REJECT
 
 echo "Step 8: Configure cron job"
+
+# discover the absolute path to THIS script
+SCRIPT_PATH=$(readlink -f "$0")
+
 CRON_FILE="/etc/cron.d/participant-whitelist"
-CRON_LINE="*/15 * * * * root bash /media/shazid/Files/MDPC/Script/restrict.sh >/dev/null 2>&1"
+CRON_LINE="*/15 * * * * root bash \"$SCRIPT_PATH\" >/dev/null 2>&1"
+
+# install or update
 if ! grep -Fxq "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
   cat <<EOF >"$CRON_FILE"
 # Refresh whitelist every 15 minutes
 $CRON_LINE
 EOF
+  echo " → cron job installed: $CRON_LINE"
+else
+  echo " → cron job already up‑to‑date"
 fi
 
 echo "Step 9: Block mounts via Polkit"

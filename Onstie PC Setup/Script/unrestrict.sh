@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "Step 0: Ensure script is executable"
+SCRIPT_PATH=$(readlink -f "$0")
+chmod +x "$SCRIPT_PATH"
+
 echo "============================================"
 echo " Starting Participant Unrestrict: $(date)"
 echo "============================================"
