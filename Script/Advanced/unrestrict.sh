@@ -10,46 +10,63 @@ echo "Removing all participant restrictions..."
 
 # Stop and disable the auto-discovery service
 echo "Stopping domain discovery service..."
-systemctl stop domain-discovery
-systemctl disable domain-discovery
-rm -f /etc/systemd/system/domain-discovery.service
-rm -f /usr/local/bin/auto_domain_discovery.sh
+systemctl stop domain-discovery 2>/dev/null || true
+systemctl disable domain-discovery 2>/dev/null || true
+[ -f "/etc/systemd/system/domain-discovery.service" ] && rm -f /etc/systemd/system/domain-discovery.service
+[ -f "/usr/local/bin/auto_domain_discovery.sh" ] && rm -f /usr/local/bin/auto_domain_discovery.sh
 
 # Stop and disable squid proxy
 echo "Stopping Squid proxy service..."
 systemctl stop squid
 if [ -f "/etc/squid/squid.conf.backup" ]; then
   mv /etc/squid/squid.conf.backup /etc/squid/squid.conf
+  echo "Restored original Squid configuration"
+else
+  echo "No Squid backup found, leaving current config in place"
 fi
 
 # Remove proxy configuration for participant
 echo "Removing participant proxy settings..."
-rm -f /usr/local/bin/set-participant-proxy.sh
-if [ -f "/home/participant/.config/autostart/proxy-settings.desktop" ]; then
-  rm -f /home/participant/.config/autostart/proxy-settings.desktop
-fi
+[ -f "/usr/local/bin/set-participant-proxy.sh" ] && rm -f /usr/local/bin/set-participant-proxy.sh
 
-# Reset participant's proxy settings to direct connection
-sudo -u participant gsettings set org.gnome.system.proxy mode 'none'
+# Check if participant user exists before trying to modify their settings
+if id "participant" &>/dev/null; then
+  echo "Resetting proxy settings for participant user..."
+  if [ -f "/home/participant/.config/autostart/proxy-settings.desktop" ]; then
+    rm -f /home/participant/.config/autostart/proxy-settings.desktop
+  fi
+  
+  # Reset participant's proxy settings to direct connection
+  sudo -u participant gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
+else
+  echo "Participant user not found, skipping user-specific settings"
+fi
 
 # Remove iptables rules
 echo "Removing iptables redirection rules..."
-iptables -t nat -F
+iptables -t nat -F  # Clear all nat rules
 netfilter-persistent save
+echo "Firewall rules cleared"
 
 # Remove USB storage restrictions
 echo "Removing USB storage restrictions..."
-rm -f /etc/udev/rules.d/99-block-participant-usb.rules
-udevadm control --reload-rules
+if [ -f "/etc/udev/rules.d/99-block-participant-usb.rules" ]; then
+  rm -f /etc/udev/rules.d/99-block-participant-usb.rules
+  udevadm control --reload-rules
+  echo "USB storage restrictions removed"
+fi
 
 # Remove mounting restrictions policy
 echo "Removing mounting restrictions..."
-rm -f /etc/polkit-1/localauthority/50-local.d/restrict-mounting.pkla
+if [ -f "/etc/polkit-1/localauthority/50-local.d/restrict-mounting.pkla" ]; then
+  rm -f /etc/polkit-1/localauthority/50-local.d/restrict-mounting.pkla
+  echo "Mounting restrictions removed"
+fi
 
 # Clean up other files
 echo "Cleaning up remaining files..."
-rm -f /etc/squid/whitelist.txt
-rm -rf /var/log/domain-discovery
+[ -f "/etc/squid/whitelist.txt" ] && rm -f /etc/squid/whitelist.txt
+[ -d "/var/log/domain-discovery" ] && rm -rf /var/log/domain-discovery
 
 # Restore permissions on mounted partitions
 echo "Restoring partition access..."

@@ -8,6 +8,18 @@ fi
 
 echo "Setting up participant restrictions with full persistence..."
 
+# Get current admin username
+CURRENT_USER=$(logname || whoami)
+echo "Using $CURRENT_USER as admin user"
+
+# Create admin group if it doesn't exist
+getent group admin > /dev/null || groupadd admin
+echo "Ensuring admin group exists"
+
+# Add current user to admin group
+usermod -aG admin $CURRENT_USER
+usermod -aG sudo $CURRENT_USER
+
 # Install required packages
 echo "Installing required packages..."
 apt update
@@ -40,6 +52,8 @@ EOF
 mkdir -p /var/log/domain-discovery
 touch /var/log/domain-discovery/denied_domains.log
 touch /var/log/domain-discovery/auto_approved.log
+chmod 666 /var/log/domain-discovery/denied_domains.log
+chmod 666 /var/log/domain-discovery/auto_approved.log
 
 # Configure squid for user-based filtering and auto-discovery
 cat > /etc/squid/squid.conf <<EOF
@@ -49,7 +63,7 @@ visible_hostname localhost
 # Define ACLs
 acl SSL_ports port 443
 acl Safe_ports port 80 443
-acl admin_user src all uid admin
+acl admin_user src all uid $CURRENT_USER
 acl participant_user src all uid participant
 acl allowed_sites dstdomain "/etc/squid/whitelist.txt"
 
@@ -72,6 +86,14 @@ http_access deny all
 cache_dir ufs /var/spool/squid 1000 16 256
 refresh_pattern . 0 20% 4320
 EOF
+
+# Test squid configuration
+echo "Validating Squid configuration..."
+squid -k parse
+if [ $? -ne 0 ]; then
+    echo "ERROR: Invalid Squid configuration. Exiting."
+    exit 1
+fi
 
 # Create the auto-discovery service
 cat > /usr/local/bin/auto_domain_discovery.sh <<'EOF'
@@ -175,8 +197,9 @@ EOF
 chmod +x /usr/local/bin/set-participant-proxy.sh
 
 # Add to participant's startup
-mkdir -p /home/participant/.config/autostart
-cat > /home/participant/.config/autostart/proxy-settings.desktop <<EOF
+if id "participant" &>/dev/null; then
+    mkdir -p /home/participant/.config/autostart
+    cat > /home/participant/.config/autostart/proxy-settings.desktop <<EOF
 [Desktop Entry]
 Name=Proxy Settings
 Exec=/usr/local/bin/set-participant-proxy.sh
@@ -184,8 +207,13 @@ Type=Application
 X-GNOME-Autostart-enabled=true
 EOF
 
-# Fix ownership
-chown -R participant:participant /home/participant/.config/
+    # Fix ownership
+    chown -R participant:participant /home/participant/.config/
+else
+    echo "WARNING: participant user does not exist. Please create it first."
+    echo "Run: sudo adduser participant"
+    exit 1
+fi
 
 # Force participant traffic through proxy with iptables
 echo "Setting up iptables rules..."
@@ -206,7 +234,11 @@ EOF
 
 udevadm control --reload-rules
 
+# Create polkit directories if they don't exist
+mkdir -p /etc/polkit-1/localauthority/50-local.d
+
 # Create a policy to prevent mounting for participant
+echo "Setting up polkit rules..."
 cat > /etc/polkit-1/localauthority/50-local.d/restrict-mounting.pkla <<EOF
 [Restrict mounting to admin group]
 Identity=unix-user:participant
@@ -216,18 +248,15 @@ ResultInactive=no
 ResultActive=no
 
 [Allow mounting for admin]
-Identity=unix-user:admin
+Identity=unix-user:$CURRENT_USER
 Action=org.freedesktop.udisks2.filesystem-mount;org.freedesktop.udisks2.filesystem-mount-system;org.freedesktop.udisks2.encrypted-unlock;org.freedesktop.udisks2.eject-media;org.freedesktop.udisks2.power-off-drive
 ResultAny=yes
 ResultInactive=yes
 ResultActive=yes
 EOF
 
-# Add admin to admin group if not already
-usermod -aG sudo admin
-usermod -aG admin admin
-
 # Remove participant from any privileged groups
+echo "Removing participant from privileged groups..."
 gpasswd -d participant sudo &>/dev/null || true
 gpasswd -d participant admin &>/dev/null || true
 gpasswd -d participant adm &>/dev/null || true
@@ -248,18 +277,36 @@ for mount_point in $partitions; do
 done
 
 # Enable and start services
+echo "Starting services..."
 systemctl daemon-reload
 systemctl enable squid
 systemctl restart squid
-systemctl enable domain-discovery
-systemctl start domain-discovery
+
+# Check if squid started successfully
+if ! systemctl is-active --quiet squid; then
+    echo "ERROR: Squid service failed to start. Check configuration with:"
+    echo "sudo journalctl -xeu squid.service"
+    exit 1
+else
+    echo "Squid service started successfully."
+    systemctl enable domain-discovery
+    systemctl start domain-discovery
+    
+    # Check domain discovery service
+    if ! systemctl is-active --quiet domain-discovery; then
+        echo "WARNING: Domain discovery service failed to start."
+        echo "Check logs with: sudo journalctl -xeu domain-discovery.service"
+    else
+        echo "Domain discovery service started successfully."
+    fi
+fi
 
 echo "=============================================================="
 echo "PARTICIPANT RESTRICTIONS SUCCESSFULLY APPLIED!"
 echo "=============================================================="
 echo ""
 echo "SUMMARY:"
-echo "1. Admin user has FULL access to:"
+echo "1. $CURRENT_USER (YOU) has FULL access to:"
 echo "   - All internet sites"
 echo "   - All USB/external storage devices" 
 echo "   - All disk partitions"
