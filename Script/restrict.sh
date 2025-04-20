@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- auto‑install missing tools ---
+echo "============================================"
+echo " Starting Participant Restrict: $(date)"
+echo "============================================"
+
+echo "Step 1: Auto‑install missing tools"
 declare -A PKG_FOR_CMD=(
   [ipset]=ipset
   [iptables]=iptables
@@ -15,26 +19,23 @@ for cmd in "${!PKG_FOR_CMD[@]}"; do
   fi
 done
 if (( ${#missing[@]} )); then
-  echo "[*] Installing missing packages: ${missing[*]}"
+  echo " → Installing: ${missing[*]}"
   apt update
   DEBIAN_FRONTEND=noninteractive apt install -y "${missing[@]}"
 fi
-# --- end auto‑install ---
 
-# ensure root
+echo "Step 2: Check for root & PATH"
 if (( EUID != 0 )); then
   echo "[ERROR] Must be run as root."
   exit 1
 fi
-
 export PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
-echo "[*] Starting participant network & device lockdown..."
 
+echo "Step 3: Initialize variables"
 USER="participant"
 UID_PARTICIPANT=$(id -u "$USER")
 CHAIN="PARTICIPANT_OUT"
 IPSET="participant_whitelist"
-
 DOMAINS=(
   codeforces.com codechef.com vjudge.net atcoder.jp
   hackerrank.com hackerearth.com topcoder.com
@@ -42,37 +43,33 @@ DOMAINS=(
   cses.fi bapsoj.com toph.co
 )
 
-# 1) create or flush ipset
+echo "Step 4: Flush or create ipset"
 if ipset list "$IPSET" &>/dev/null; then
-  echo "[1] Flushing ipset $IPSET"
   ipset flush "$IPSET"
 else
-  echo "[1] Creating ipset $IPSET"
   ipset create "$IPSET" hash:ip family inet hashsize 1024
 fi
 
-# 2) resolve domains → add to ipset
-echo "[2] Resolving domains into $IPSET"
+echo "Step 5: Resolve domains → ipset"
 for d in "${DOMAINS[@]}"; do
-  echo "   → $d"
+  echo " → $d"
   mapfile -t ips < <(
     dig +short A "$d" 2>/dev/null \
       | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
       | sort -u
   )
   if (( ${#ips[@]} == 0 )); then
-    echo "      [!] no A records, skipping"
+    echo "   [!] no A records, skipping"
     continue
   fi
   for ip in "${ips[@]}"; do
-    echo "      · $ip"
+    echo "   · $ip"
     ipset add "$IPSET" "$ip" \
-      || echo "      [!] failed to add $ip"
+      || echo "     [!] failed to add $ip"
   done
 done
 
-# 3) rebuild iptables chain
-echo "[3] Rebuilding iptables chain $CHAIN"
+echo "Step 6: Rebuild iptables chain"
 iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" 2>/dev/null || true
 if iptables -t filter -L "$CHAIN" &>/dev/null; then
   iptables -t filter -F "$CHAIN"
@@ -81,48 +78,29 @@ fi
 iptables -t filter -N "$CHAIN"
 iptables -t filter -I OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
 
-# 4) allow DNS
-echo "[4] Allowing DNS"
+echo "Step 7: Allow DNS & HTTP/HTTPS"
 iptables -A "$CHAIN" -p udp --dport 53 -j ACCEPT
 iptables -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
-
-# 5) allow HTTP/HTTPS → whitelisted IPs
-echo "[5] Allowing HTTP/HTTPS"
 iptables -A "$CHAIN" -p tcp -m multiport --dports 80,443 \
          -m set --match-set "$IPSET" dst -j ACCEPT
-
-# 6) allow established
-echo "[6] Allowing ESTABLISHED,RELATED"
 iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-# 7) drop all else
-echo "[7] Dropping everything else"
 iptables -A "$CHAIN" -j REJECT
 
-# 8) cron job
+echo "Step 8: Configure cron job"
 CRON_FILE="/etc/cron.d/participant-whitelist"
 CRON_LINE="*/15 * * * * root bash /media/shazid/Files/MDPC/Script/restrict.sh >/dev/null 2>&1"
-echo "[8] Ensuring cron job"
 if ! grep -Fxq "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
   cat <<EOF >"$CRON_FILE"
 # Refresh whitelist every 15 minutes
 $CRON_LINE
 EOF
-  echo "    · installed"
-else
-  echo "    · already present"
 fi
 
-# 9) strip participant from disk & plugdev groups
-echo "[9] Removing $USER from disk & plugdev groups"
-deluser "$USER" disk    &>/dev/null || true
-deluser "$USER" plugdev &>/dev/null || true
-
-# 10) block mounts via Polkit (only for 'participant')
-PKLA_FILE="/etc/polkit-1/localauthority/50-local.d/disable-participant-mount.pkla"
-echo "[10] Writing Polkit rule to disable all mounts for participant"
-mkdir -p "$(dirname "$PKLA_FILE")"
-cat <<EOF > "$PKLA_FILE"
+echo "Step 9: Block mounts via Polkit"
+PKLA_DIR="/etc/polkit-1/localauthority/50-local.d"
+PKLA_FILE="$PKLA_DIR/disable-participant-mount.pkla"
+mkdir -p "$PKLA_DIR"
+cat <<EOF >"$PKLA_FILE"
 [Disable all mounts for participant]
 Identity=unix-user:$USER
 Action=org.freedesktop.udisks2.filesystem-mount
@@ -134,17 +112,16 @@ ResultAny=no
 ResultActive=no
 ResultInactive=no
 EOF
-systemctl reload polkit.service &>/dev/null || echo "    ! polkit reload failed"
+systemctl reload polkit.service &>/dev/null || true
 
-# 11) enforce USB-only device‐node lockdown via udev (only for 'participant')
+echo "Step 10: Block USB storage via udev"
 UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
-echo "[11] Writing udev rule to lock USB block devices for participant"
-cat <<EOF > "$UDEV_RULES"
-# all USB disks/partitions become root:root, mode 0000 for 'participant'
-
+cat <<EOF >"$UDEV_RULES"
 SUBSYSTEM=="block", ENV{ID_BUS}=="usb", KERNEL=="sd[b-z][0-9]*", MODE="0000", OWNER="root", GROUP="root"
 SUBSYSTEM=="block", ENV{ID_BUS}=="usb", KERNEL=="mmcblk[0-9]*", MODE="0000", OWNER="root", GROUP="root"
 EOF
 udevadm control --reload-rules && udevadm trigger
 
-echo "[*] Done. Participant is locked down."
+echo "============================================"
+echo " Participant Restrict Completed!"
+echo "============================================"
