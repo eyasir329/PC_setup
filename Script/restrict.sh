@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# === auto‑install missing tools ===
+declare -A PKG_FOR_CMD=(
+  [ipset]=ipset
+  [iptables]=iptables
+  [udevadm]=udev
+  [getent]=glibc-bin
+)
+missing=()
+for cmd in "${!PKG_FOR_CMD[@]}"; do
+  if ! command -v "$cmd" &>/dev/null; then
+    missing+=("${PKG_FOR_CMD[$cmd]}")
+  fi
+done
+
+if (( ${#missing[@]} )); then
+  echo "[*] Installing missing packages: ${missing[*]}"
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt install -y "${missing[@]}"
+fi
+# === end auto‑install ===
+
 # ensure root
 if (( EUID != 0 )); then
   echo "[ERROR] Must be run as root."
@@ -10,11 +31,10 @@ fi
 # make sure sbin dirs are in PATH (where ipset lives)
 export PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
 
-# verify required commands
+# existing tool‑verification can be removed or left as a double‑check:
 for cmd in ipset iptables udevadm getent; do
   if ! command -v "$cmd" &>/dev/null; then
-    echo "[ERROR] $cmd not found.  Please install with:"
-    echo "    sudo apt update && sudo apt install ipset iptables udev"
+    echo "[ERROR] $cmd still not found after install."
     exit 1
   fi
 done
