@@ -27,26 +27,14 @@ if (( EUID != 0 )); then
   exit 1
 fi
 
-# ensure sbin in PATH
 export PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
-
 echo "[*] Starting participant network & device lockdown..."
 
-# parameters
 DOMAINS=(
-  codeforces.com
-  codechef.com
-  vjudge.net
-  atcoder.jp
-  hackerrank.com
-  hackerearth.com
-  topcoder.com
-  spoj.com
-  lightoj.com
-  uva.onlinejudge.org
-  cses.fi
-  bapsoj.com
-  toph.co
+  codeforces.com codechef.com vjudge.net atcoder.jp
+  hackerrank.com hackerearth.com topcoder.com
+  spoj.com lightoj.com uva.onlinejudge.org
+  cses.fi bapsoj.com toph.co
 )
 IPSET="participant_whitelist"
 CHAIN="PARTICIPANT_OUT"
@@ -55,7 +43,7 @@ UID_PARTICIPANT=$(id -u "$USER")
 
 # 1) create or flush ipset
 if ipset list "$IPSET" &>/dev/null; then
-  echo "[1] Flushing existing ipset $IPSET"
+  echo "[1] Flushing ipset $IPSET"
   ipset flush "$IPSET"
 else
   echo "[1] Creating ipset $IPSET"
@@ -63,7 +51,7 @@ else
 fi
 
 # 2) resolve domains → add to ipset
-echo "[2] Resolving and adding domain IPs to $IPSET"
+echo "[2] Resolving domains into $IPSET"
 for d in "${DOMAINS[@]}"; do
   echo "   → $d"
   mapfile -t ips < <(
@@ -72,77 +60,82 @@ for d in "${DOMAINS[@]}"; do
       | sort -u
   )
   if (( ${#ips[@]} == 0 )); then
-    echo "      [!] no A records found, skipping"
+    echo "      [!] no A records, skipping"
     continue
   fi
   for ip in "${ips[@]}"; do
     echo "      · $ip"
-    ipset add "$IPSET" "$ip" || echo "      [!] Failed to add $ip"
+    ipset add "$IPSET" "$ip" \
+      || echo "      [!] failed to add $ip"
   done
 done
 
 # 3) rebuild iptables chain
 echo "[3] Rebuilding iptables chain $CHAIN"
-iptables -t filter -F "$CHAIN" 2>/dev/null || true
-iptables -t filter -X "$CHAIN" 2>/dev/null || true
+# 3a) delete old OUTPUT hook
+iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" 2>/dev/null || true
+# 3b) if chain exists, flush & delete
+if iptables -t filter -L "$CHAIN" &>/dev/null; then
+  iptables -t filter -F "$CHAIN"
+  iptables -t filter -X "$CHAIN"
+fi
+# 3c) create fresh chain
 iptables -t filter -N "$CHAIN"
 
-# hook chain to OUTPUT for participant
-if ! iptables -t filter -C OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" &>/dev/null; then
-  iptables -t filter -I OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
-fi
+# hook new chain into OUTPUT
+iptables -t filter -I OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
 
 # 4) allow DNS
-echo "[4] Allowing DNS lookups"
+echo "[4] Allowing DNS"
 iptables -A "$CHAIN" -p udp --dport 53 -j ACCEPT
 iptables -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
 
-# 5) allow HTTP/HTTPS only to whitelisted IPs
-echo "[5] Allowing HTTP/HTTPS to whitelisted IPs"
+# 5) allow HTTP/HTTPS → whitelisted IPs
+echo "[5] Allowing HTTP/HTTPS"
 iptables -A "$CHAIN" -p tcp -m multiport --dports 80,443 \
          -m set --match-set "$IPSET" dst -j ACCEPT
 
 # 6) allow established
-echo "[6] Allowing ESTABLISHED,RELATED traffic"
+echo "[6] Allowing ESTABLISHED,RELATED"
 iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# 7) drop everything else
-echo "[7] Dropping all other traffic for $USER"
+# 7) drop all else
+echo "[7] Dropping everything else"
 iptables -A "$CHAIN" -j REJECT
 
-# 8) install/update cron job
+# 8) cron job
 CRON_FILE="/etc/cron.d/participant-whitelist"
 CRON_LINE="*/15 * * * * root bash /media/shazid/Files/MDPC/Script/restrict.sh >/dev/null 2>&1"
-echo "[8] Ensuring cron job in $CRON_FILE"
+echo "[8] Ensuring cron job"
 if ! grep -Fxq "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
-  cat <<EOF > "$CRON_FILE"
+  cat <<EOF >"$CRON_FILE"
 # Refresh whitelist every 15 minutes
 $CRON_LINE
 EOF
-  echo "    · Cron job written."
+  echo "    · installed"
 else
-  echo "    · Cron job already present."
+  echo "    · already present"
 fi
 
-# 9) block mount attempts via Polkit
+# 9) block mounts via Polkit
 PKLA_DIR="/etc/polkit-1/localauthority/50-local.d"
 PKLA_FILE="$PKLA_DIR/disable-participant-mount.pkla"
-echo "[9] Ensuring Polkit block in $PKLA_FILE"
+echo "[9] Writing Polkit rule"
 mkdir -p "$PKLA_DIR"
-cat <<EOF > "$PKLA_FILE"
-[Block all mounts for participant]
+cat <<EOF >"$PKLA_FILE"
+[Block mounts for participant]
 Identity=unix-user:$USER
 Action=org.freedesktop.udisks2.*
 ResultAny=no
 ResultActive=no
 ResultInactive=no
 EOF
-systemctl reload polkit.service &>/dev/null || echo "    ! Could not reload polkit—reboot to apply."
+systemctl reload polkit.service &>/dev/null || echo "    ! reload polkit failed"
 
-# 10) block USB storage via udev
+# 10) block USB via udev
 UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
-echo "[10] Writing udev rule to deny USB storage"
-cat <<EOF > "$UDEV_RULES"
+echo "[10] Writing udev rule"
+cat <<EOF >"$UDEV_RULES"
 SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="disk", MODE="0000"
 SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="partition", MODE="0000"
 EOF
