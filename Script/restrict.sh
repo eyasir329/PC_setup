@@ -117,27 +117,36 @@ else
   echo "    · already present"
 fi
 
-# 9) block mounts via Polkit
-PKLA_DIR="/etc/polkit-1/localauthority/50-local.d"
-PKLA_FILE="$PKLA_DIR/disable-participant-mount.pkla"
-echo "[9] Writing Polkit rule"
+# 9) strip participant from disk/plugdev
+echo "[9] Removing $USER from disk & plugdev groups"
+deluser "$USER" disk    &>/dev/null || true
+deluser "$USER" plugdev &>/dev/null || true
+
+# 10) block mounts via Polkit
+PKLA_DIR=/etc/polkit-1/localauthority/50-local.d
+PKLA_FILE=$PKLA_DIR/disable-participant-mount.pkla
+echo "[10] Writing Polkit rule to disable all mounts"
 mkdir -p "$PKLA_DIR"
-cat <<EOF >"$PKLA_FILE"
-[Block mounts for participant]
+cat <<EOF > "$PKLA_FILE"
+[Disable all mounts for participant]
 Identity=unix-user:$USER
-Action=org.freedesktop.udisks2.*
+Action=org.freedesktop.udisks2.filesystem-mount
+Action=org.freedesktop.udisks2.filesystem-mount-system
+Action=org.freedesktop.udisks2.filesystem-unmount
+Action=org.freedesktop.udisks2.eject
+Action=org.freedesktop.udisks2.power-off-drive
 ResultAny=no
 ResultActive=no
 ResultInactive=no
 EOF
-systemctl reload polkit.service &>/dev/null || echo "    ! reload polkit failed"
+systemctl reload polkit.service &>/dev/null || echo "    ! polkit reload failed"
 
-# 10) block USB via udev
-UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
-echo "[10] Writing udev rule"
-cat <<EOF >"$UDEV_RULES"
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="disk", MODE="0000"
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="partition", MODE="0000"
+# 11) enforce USB‐only device‐node lockdown via udev
+UDEV_RULES=/etc/udev/rules.d/99-usb-block.rules
+echo "[11] Writing udev rule to lock USB block devices"
+cat <<EOF > "$UDEV_RULES"
+# all USB disks/partitions become root:root, mode 0000
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", KERNEL=="sd[b-z]|mmcblk[0-9]*", OWNER="root", GROUP="root", MODE="0000"
 EOF
 udevadm control --reload-rules && udevadm trigger
 

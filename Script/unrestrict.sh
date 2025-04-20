@@ -3,9 +3,11 @@ set -euo pipefail
 
 # ensure root
 if (( EUID != 0 )); then
-  echo "[ERROR] root only"
+  echo "[ERROR] Must be run as root."
   exit 1
 fi
+
+echo "[*] Reverting participant restrictions..."
 
 USER="participant"
 UID_PARTICIPANT=$(id -u "$USER")
@@ -15,31 +17,46 @@ CRON_FILE="/etc/cron.d/participant-whitelist"
 PKLA_FILE="/etc/polkit-1/localauthority/50-local.d/disable-participant-mount.pkla"
 UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
 
-echo "[*] Reverting participant restrictions"
-
-# 1) remove OUTPUT hook
+# 1) remove iptables OUTPUT hook
+echo "[1] Removing iptables hook for $USER"
 iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" 2>/dev/null || true
 
-# 2) flush & delete chain
+# 2) flush & delete the chain
 if iptables -t filter -L "$CHAIN" &>/dev/null; then
+  echo "[2] Flushing and deleting chain $CHAIN"
   iptables -t filter -F "$CHAIN"
   iptables -t filter -X "$CHAIN"
 fi
 
 # 3) destroy ipset
 if ipset list "$IPSET" &>/dev/null; then
+  echo "[3] Destroying ipset $IPSET"
   ipset destroy "$IPSET"
 fi
 
-# 4) remove cron
-rm -f "$CRON_FILE"
+# 4) remove cron job
+if [[ -f "$CRON_FILE" ]]; then
+  echo "[4] Removing cron job $CRON_FILE"
+  rm -f "$CRON_FILE"
+fi
 
-# 5) remove polkit rule
-rm -f "$PKLA_FILE"
-systemctl reload polkit.service &>/dev/null || echo "    ! polkit reload failed"
+# 5) re‑add $USER to disk & plugdev groups
+echo "[5] Restoring $USER to disk & plugdev groups"
+adduser "$USER" disk    &>/dev/null || true
+adduser "$USER" plugdev &>/dev/null || true
 
-# 6) remove udev rule
-rm -f "$UDEV_RULES"
-udevadm control --reload-rules && udevadm trigger
+# 6) remove Polkit rule
+if [[ -f "$PKLA_FILE" ]]; then
+  echo "[6] Removing Polkit rule $PKLA_FILE"
+  rm -f "$PKLA_FILE"
+  systemctl reload polkit.service &>/dev/null || echo "    ! polkit reload failed"
+fi
 
-echo "[*] Done, restrictions lifted."
+# 7) remove udev rule
+if [[ -f "$UDEV_RULES" ]]; then
+  echo "[7] Removing udev rule $UDEV_RULES"
+  rm -f "$UDEV_RULES"
+  udevadm control --reload-rules && udevadm trigger
+fi
+
+echo "[*] Done. Participant can now mount devices and has full network access."
