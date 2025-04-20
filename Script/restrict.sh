@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === auto‑install missing tools ===
+# --- auto‑install missing tools ---
 declare -A PKG_FOR_CMD=(
   [ipset]=ipset
   [iptables]=iptables
   [udevadm]=udev
-  [getent]=glibc-bin
+  [dig]=dnsutils
 )
 missing=()
 for cmd in "${!PKG_FOR_CMD[@]}"; do
@@ -14,13 +14,12 @@ for cmd in "${!PKG_FOR_CMD[@]}"; do
     missing+=("${PKG_FOR_CMD[$cmd]}")
   fi
 done
-
 if (( ${#missing[@]} )); then
   echo "[*] Installing missing packages: ${missing[*]}"
   apt update
   DEBIAN_FRONTEND=noninteractive apt install -y "${missing[@]}"
 fi
-# === end auto‑install ===
+# --- end auto‑install ---
 
 # ensure root
 if (( EUID != 0 )); then
@@ -28,20 +27,12 @@ if (( EUID != 0 )); then
   exit 1
 fi
 
-# make sure sbin dirs are in PATH (where ipset lives)
+# ensure sbin in PATH
 export PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
 
-# existing tool‑verification can be removed or left as a double‑check:
-for cmd in ipset iptables udevadm getent; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "[ERROR] $cmd still not found after install."
-    exit 1
-  fi
-done
+echo "[*] Starting participant network & device lockdown..."
 
-echo "[*] Starting participant network/device & device lockdown..."
-
-# 0) params
+# parameters
 DOMAINS=(
   codeforces.com
   codechef.com
@@ -75,27 +66,16 @@ fi
 echo "[2] Resolving and adding domain IPs to $IPSET"
 for d in "${DOMAINS[@]}"; do
   echo "   → $d"
-  # temporarily disable errexit so a failed getent doesn't kill the script
-  set +e
-  mapfile -t ips < <(
-    getent ahosts "$d" 2>/dev/null \
-      | awk '$3=="STREAM" && $1 ~ /^[0-9.]+$/{print $1}' \
-      | sort -u
-  )
-  set -e
-
+  mapfile -t ips < <(dig +short A "$d" 2>/dev/null | sort -u)
   if (( ${#ips[@]} == 0 )); then
-    echo "      [!] no IPs found for $d, skipping"
+    echo "      [!] no A records found, skipping"
     continue
   fi
-
   for ip in "${ips[@]}"; do
     echo "      · $ip"
-    ipset add "$IPSET" "$ip" \
-      || echo "      [!] Failed to add $ip"
+    ipset add "$IPSET" "$ip" || echo "      [!] Failed to add $ip"
   done
 done
-
 
 # 3) rebuild iptables chain
 echo "[3] Rebuilding iptables chain $CHAIN"
@@ -103,7 +83,7 @@ iptables -t filter -F "$CHAIN" 2>/dev/null || true
 iptables -t filter -X "$CHAIN" 2>/dev/null || true
 iptables -t filter -N "$CHAIN"
 
-# hook into OUTPUT for that user
+# hook chain to OUTPUT for participant
 if ! iptables -t filter -C OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" &>/dev/null; then
   echo "[3] Hooking $CHAIN into OUTPUT for UID $UID_PARTICIPANT"
   iptables -t filter -I OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
@@ -117,8 +97,7 @@ iptables -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
 # 5) allow HTTP/HTTPS only to whitelisted IPs
 echo "[5] Allowing HTTP/HTTPS to whitelisted IPs"
 iptables -A "$CHAIN" -p tcp -m multiport --dports 80,443 \
-         -m set --match-set "$IPSET" dst \
-         -j ACCEPT
+         -m set --match-set "$IPSET" dst -j ACCEPT
 
 # 6) allow established
 echo "[6] Allowing ESTABLISHED,RELATED traffic"
@@ -132,7 +111,7 @@ iptables -A "$CHAIN" -j REJECT
 CRON_FILE="/etc/cron.d/participant-whitelist"
 CRON_LINE="*/15 * * * * root bash /media/shazid/Files/MDPC/Script/restrict.sh >/dev/null 2>&1"
 echo "[8] Ensuring cron job in $CRON_FILE"
-if [[ ! -f "$CRON_FILE" ]] || ! grep -Fxq "$CRON_LINE" "$CRON_FILE"; then
+if ! grep -Fxq "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
   cat <<EOF > "$CRON_FILE"
 # Refresh whitelist every 15 minutes
 $CRON_LINE
@@ -142,11 +121,12 @@ else
   echo "    · Cron job already present."
 fi
 
-# 9) block all mount attempts for participant
-PKLA_FILE="/etc/polkit-1/localauthority/50-local.d/disable-participant-mount.pkla"
-echo "[9] Ensuring device‑mount block in $PKLA_FILE"
-if [[ ! -f "$PKLA_FILE" ]] || ! grep -q "Identity=unix-user:$USER" "$PKLA_FILE"; then
-  cat <<EOF > "$PKLA_FILE"
+# 9) block all mount attempts via Polkit
+PKLA_DIR="/etc/polkit-1/localauthority/50-local.d"
+PKLA_FILE="$PKLA_DIR/disable-participant-mount.pkla"
+echo "[9] Ensuring Polkit block in $PKLA_FILE"
+mkdir -p "$PKLA_DIR"
+cat <<EOF > "$PKLA_FILE"
 [Block all mounts for participant]
 Identity=unix-user:$USER
 Action=org.freedesktop.udisks2.*
@@ -154,21 +134,15 @@ ResultAny=no
 ResultActive=no
 ResultInactive=no
 EOF
-  echo "    · Polkit rule written."
-  systemctl reload polkit.service 2>/dev/null || echo "    ! Could not reload polkit, reboot to apply."
-else
-  echo "    · Polkit rule already present."
-fi
+systemctl reload polkit.service &>/dev/null || echo "    ! Could not reload polkit—reboot to apply."
 
-# 10) block any new USB/block‐device for non‑root via udev
+# 10) block USB storage via udev
 UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
-echo "[10] Writing udev rule to deny USB storage access for non-root"
+echo "[10] Writing udev rule to deny USB storage"
 cat <<EOF > "$UDEV_RULES"
-# Deny read/write on any USB mass‑storage block device
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="disk", MODE="0000", OWNER="root", GROUP="root"
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="partition", MODE="0000", OWNER="root", GROUP="root"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="disk", MODE="0000"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", DEVTYPE=="partition", MODE="0000"
 EOF
 udevadm control --reload-rules && udevadm trigger
-
 
 echo "[*] Done."

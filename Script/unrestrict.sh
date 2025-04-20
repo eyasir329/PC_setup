@@ -19,13 +19,13 @@ UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
 
 # 1) remove iptables hook
 if iptables -t filter -C OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" &>/dev/null; then
-  echo "[1] Removing OUTPUT hook for UID $USER"
+  echo "[1] Removing OUTPUT hook"
   iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
 fi
 
-# 2) flush & delete the chain
+# 2) flush & delete chain
 if iptables -t filter -L "$CHAIN" &>/dev/null; then
-  echo "[2] Flushing and deleting chain $CHAIN"
+  echo "[2] Flushing & deleting chain $CHAIN"
   iptables -t filter -F "$CHAIN"
   iptables -t filter -X "$CHAIN"
 fi
@@ -38,20 +38,20 @@ fi
 
 # 4) remove cron job
 if [[ -f "$CRON_FILE" ]]; then
-  echo "[4] Removing cron file $CRON_FILE"
+  echo "[4] Removing cron file"
   rm -f "$CRON_FILE"
 fi
 
 # 5) remove polkit rule
 if [[ -f "$PKLA_FILE" ]]; then
-  echo "[5] Removing polkit rule $PKLA_FILE"
+  echo "[5] Removing Polkit rule"
   rm -f "$PKLA_FILE"
-  systemctl reload polkit.service &>/dev/null || echo "[!] Could not reload polkit, please reboot."
+  systemctl reload polkit.service &>/dev/null || echo "    ! Could not reload polkit, please reboot."
 fi
 
 # 6) remove udev rule
 if [[ -f "$UDEV_RULES" ]]; then
-  echo "[6] Removing udev rule $UDEV_RULES"
+  echo "[6] Removing udev rule"
   rm -f "$UDEV_RULES"
   udevadm control --reload-rules && udevadm trigger
 fi
