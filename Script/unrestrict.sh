@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# unrestrict.sh – reverse the participant lockdown
-
+# unrestrict.sh – reverse participant lockdown
 set -euo pipefail
 
 IPSET_NAME="contestwhitelist"
@@ -12,22 +11,22 @@ PART_UID=$(id -u participant)
 iptables -D OUTPUT -m owner --uid-owner "$PART_UID" -p udp --dport 53 -j ACCEPT
 iptables -D OUTPUT -m owner --uid-owner "$PART_UID" -m set --match-set "$IPSET_NAME" dst -j ACCEPT
 iptables -D OUTPUT -m owner --uid-owner "$PART_UID" -j DROP
-netfilter-persistent save                                 # persist removal :contentReference[oaicite:12]{index=12}
+netfilter-persistent save                                           # purge rules :contentReference[oaicite:19]{index=19}
 
-# 2. Tear down IP set & persistence
-ipset destroy "$IPSET_NAME" || true                        # drop the set :contentReference[oaicite:13]{index=13}
-apt-get remove --purge -y ipset-persistent                 # remove persist packages
+# 2. Destroy IP set & persistence
+ipset destroy "$IPSET_NAME" || true                                 # remove set :contentReference[oaicite:20]{index=20}
+apt-get remove --purge -y ipset-persistent
 rm -f /etc/ipset.conf
 
-# 3. Remove dnsmasq drop‑in
-rm -f "$DNSMASQ_DROPIN"                                    # delete dynamic whitelist config
-systemctl restart dnsmasq                                  # reload default DNS paths
+# 3. Remove dnsmasq config
+rm -f "$DNSMASQ_DROPIN"
+systemctl restart dnsmasq                                           # default DNS
 
-# 4. Restore systemd‑resolved stub listener
+# 4. Restore systemd-resolved stub
 sed -i 's/^DNSStubListener=no/#DNSStubListener=yes/' /etc/systemd/resolved.conf
-systemctl restart systemd-resolved                         # restore stub resolver
+systemctl restart systemd-resolved                                 # bring back stub :contentReference[oaicite:21]{index=21}
 
 # 5. Remove Polkit rule
-rm -f "$POLKIT_RULE"                                       # participant can mount again
+rm -f "$POLKIT_RULE"                                                # re‑enable mounts :contentReference[oaicite:22]{index=22}
 
 echo "unrestrict.sh: participant account fully restored."
