@@ -59,7 +59,7 @@ if [ "$1" = "--apply-only" ]; then
         for host in "$domain" "www.$domain"; do
             # Use host command to resolve IP addresses (handles dynamic IPs)
             if host_ips=$(host "$host" 2>/dev/null | grep "has address" | awk '{print $4}'); then
-                for ip in $host_ips; do
+                for ip in $host_ips; then
                     echo "Blocking IP $ip for domain $host"
                     iptables -t mangle -A PARTICIPANT_RULES -d "$ip" -j DROP
                 done
@@ -68,6 +68,14 @@ if [ "$1" = "--apply-only" ]; then
                 # Create a string match for DNS queries
                 iptables -t mangle -A PARTICIPANT_RULES -p udp --dport 53 -m string --string "$host" --algo bm -j DROP
                 iptables -t mangle -A PARTICIPANT_RULES -p tcp --dport 53 -m string --string "$host" --algo bm -j DROP
+            fi
+            
+            # Check for IPv6 addresses as well
+            if host_ips6=$(host -t AAAA "$host" 2>/dev/null | grep "has IPv6 address" | awk '{print $5}'); then
+                for ip in $host_ips6; do
+                    echo "Blocking IPv6 $ip for domain $host"
+                    ip6tables -t mangle -A PARTICIPANT_RULES -d "$ip" -j DROP 2>/dev/null || true
+                done
             fi
         done
     }
@@ -94,6 +102,7 @@ if [ "$1" = "--apply-only" ]; then
     else
         mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4
+        [ -x "$(command -v ip6tables-save)" ] && ip6tables-save > /etc/iptables/rules.v6
     fi
     
     echo "Rules refreshed successfully."
@@ -115,7 +124,9 @@ if ! command_exists iptables || ! command_exists host; then
 fi
 
 # Flush existing user-specific rules
-iptables -t mangle -F OUTPUT 2>/dev/null || true
+iptables -t mangle -D OUTPUT -m owner --uid-owner $PARTICIPANT_UID -j PARTICIPANT_RULES 2>/dev/null || true
+iptables -t mangle -F PARTICIPANT_RULES 2>/dev/null || true
+iptables -t mangle -X PARTICIPANT_RULES 2>/dev/null || true
 
 # Create a new chain for participant restrictions
 iptables -t mangle -N PARTICIPANT_RULES 2>/dev/null || iptables -t mangle -F PARTICIPANT_RULES
@@ -156,6 +167,14 @@ block_domain() {
             iptables -t mangle -A PARTICIPANT_RULES -p udp --dport 53 -m string --string "$host" --algo bm -j DROP
             iptables -t mangle -A PARTICIPANT_RULES -p tcp --dport 53 -m string --string "$host" --algo bm -j DROP
         fi
+        
+        # Check for IPv6 addresses as well
+        if host_ips6=$(host -t AAAA "$host" 2>/dev/null | grep "has IPv6 address" | awk '{print $5}'); then
+            for ip in $host_ips6; then
+                echo "Blocking IPv6 $ip for domain $host"
+                ip6tables -t mangle -A PARTICIPANT_RULES -d "$ip" -j DROP 2>/dev/null || true
+            done
+        fi
     done
 }
 
@@ -173,6 +192,7 @@ if command_exists netfilter-persistent; then
 else
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
+    [ -x "$(command -v ip6tables-save)" ] && ip6tables-save > /etc/iptables/rules.v6
 fi
 
 # Create a systemd service to apply rules on startup and periodically refresh for dynamic IPs
@@ -267,7 +287,7 @@ profile participant-restricted {
 EOF
 
 # Load AppArmor profile
-apparmor_parser -r /etc/apparmor.d/usr.local.bin.participant-restricted
+apparmor_parser -r /etc/apparmor.d/usr.local.bin.participant-restricted 2>/dev/null || true
 
 # Configure PAM to apply AppArmor profile for participant
 if ! grep -q "participant-restricted" /etc/pam.d/common-session; then
@@ -310,6 +330,7 @@ verify_restrictions() {
         echo "✓ DNS blocking working correctly"
     else
         echo "✗ DNS blocking may not be working"
+        echo "   Additional verification recommended."
     fi
     
     # Test file permissions
@@ -321,6 +342,7 @@ verify_restrictions() {
         echo "✓ Storage restrictions working correctly"
     else
         echo "✗ Storage restrictions may not be working"
+        echo "   Additional verification recommended."
     fi
     rmdir /media/test_drive 2>/dev/null || true
 }
