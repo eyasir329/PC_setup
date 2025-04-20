@@ -7,6 +7,18 @@ if (( EUID != 0 )); then
   exit 1
 fi
 
+# make sure sbin dirs are in PATH (where ipset lives)
+export PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
+
+# verify required commands
+for cmd in ipset iptables udevadm getent; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "[ERROR] $cmd not found.  Please install with:"
+    echo "    sudo apt update && sudo apt install ipset iptables udev"
+    exit 1
+  fi
+done
+
 echo "[*] Starting participant network/device & device lockdown..."
 
 # 0) params
