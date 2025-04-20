@@ -30,16 +30,17 @@ fi
 export PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
 echo "[*] Starting participant network & device lockdown..."
 
+USER="participant"
+UID_PARTICIPANT=$(id -u "$USER")
+CHAIN="PARTICIPANT_OUT"
+IPSET="participant_whitelist"
+
 DOMAINS=(
   codeforces.com codechef.com vjudge.net atcoder.jp
   hackerrank.com hackerearth.com topcoder.com
   spoj.com lightoj.com uva.onlinejudge.org
   cses.fi bapsoj.com toph.co
 )
-IPSET="participant_whitelist"
-CHAIN="PARTICIPANT_OUT"
-USER="participant"
-UID_PARTICIPANT=$(id -u "$USER")
 
 # 1) create or flush ipset
 if ipset list "$IPSET" &>/dev/null; then
@@ -72,17 +73,12 @@ done
 
 # 3) rebuild iptables chain
 echo "[3] Rebuilding iptables chain $CHAIN"
-# 3a) delete old OUTPUT hook
 iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN" 2>/dev/null || true
-# 3b) if chain exists, flush & delete
 if iptables -t filter -L "$CHAIN" &>/dev/null; then
   iptables -t filter -F "$CHAIN"
   iptables -t filter -X "$CHAIN"
 fi
-# 3c) create fresh chain
 iptables -t filter -N "$CHAIN"
-
-# hook new chain into OUTPUT
 iptables -t filter -I OUTPUT -m owner --uid-owner "$UID_PARTICIPANT" -j "$CHAIN"
 
 # 4) allow DNS
@@ -117,16 +113,15 @@ else
   echo "    · already present"
 fi
 
-# 9) strip participant from disk/plugdev
+# 9) strip participant from disk & plugdev groups
 echo "[9] Removing $USER from disk & plugdev groups"
 deluser "$USER" disk    &>/dev/null || true
 deluser "$USER" plugdev &>/dev/null || true
 
-# 10) block mounts via Polkit
-PKLA_DIR=/etc/polkit-1/localauthority/50-local.d
-PKLA_FILE=$PKLA_DIR/disable-participant-mount.pkla
-echo "[10] Writing Polkit rule to disable all mounts"
-mkdir -p "$PKLA_DIR"
+# 10) block mounts via Polkit (only for 'participant')
+PKLA_FILE="/etc/polkit-1/localauthority/50-local.d/disable-participant-mount.pkla"
+echo "[10] Writing Polkit rule to disable all mounts for participant"
+mkdir -p "$(dirname "$PKLA_FILE")"
 cat <<EOF > "$PKLA_FILE"
 [Disable all mounts for participant]
 Identity=unix-user:$USER
@@ -141,13 +136,15 @@ ResultInactive=no
 EOF
 systemctl reload polkit.service &>/dev/null || echo "    ! polkit reload failed"
 
-# 11) enforce USB‐only device‐node lockdown via udev
-UDEV_RULES=/etc/udev/rules.d/99-usb-block.rules
-echo "[11] Writing udev rule to lock USB block devices"
+# 11) enforce USB-only device‐node lockdown via udev (only for 'participant')
+UDEV_RULES="/etc/udev/rules.d/99-usb-block.rules"
+echo "[11] Writing udev rule to lock USB block devices for participant"
 cat <<EOF > "$UDEV_RULES"
-# all USB disks/partitions become root:root, mode 0000
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", KERNEL=="sd[b-z]|mmcblk[0-9]*", OWNER="root", GROUP="root", MODE="0000"
+# all USB disks/partitions become root:root, mode 0000 for 'participant'
+
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", KERNEL=="sd[b-z][0-9]*", MODE="0000", OWNER="root", GROUP="root"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", KERNEL=="mmcblk[0-9]*", MODE="0000", OWNER="root", GROUP="root"
 EOF
 udevadm control --reload-rules && udevadm trigger
 
-echo "[*] Done."
+echo "[*] Done. Participant is locked down."
