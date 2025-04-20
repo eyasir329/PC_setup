@@ -76,11 +76,11 @@ echo "[2] Resolving and adding domain IPs to $IPSET"
 for d in "${DOMAINS[@]}"; do
   echo "   → $d"
   getent ahosts "$d" \
-    | awk '$3=="STREAM" && $1 ~ /^[0-9.]+$/ {print $1}' \
+    | awk '$3=="STREAM" && $1 ~ /^[0-9.]+$/{print $1}' \
     | sort -u \
     | while read -r ip; do
         echo "      · $ip"
-        ipset add "$IPSET" "$ip"
+        ipset add "$IPSET" "$ip" || echo "[!] Failed to add $ip"
       done
 done
 
