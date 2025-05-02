@@ -13,7 +13,7 @@ def calculate_points(rank: int) -> int:
     Returns:
         The calculated points
     """
-    return math.ceil(1800.0 / (rank + 5))
+    return math.ceil(1600.0 / (rank + 7))
 
 def process_rank_data(rank_data: List[Tuple[str, int]]) -> Dict[str, int]:
     """
