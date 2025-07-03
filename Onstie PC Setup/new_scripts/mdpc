@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration variables
+DEFAULT_USER="participant"
+SCRIPT_DIR="/usr/local/share/mdpc"
+RESTRICT_SCRIPT="$SCRIPT_DIR/mdpc-restrict.sh"
+UNRESTRICT_SCRIPT="$SCRIPT_DIR/mdpc-unrestrict.sh"
+SETUP_SCRIPT="$SCRIPT_DIR/mdpc-setup.sh"
+RESET_SCRIPT="$SCRIPT_DIR/mdpc-reset.sh"
+WHITELIST="/etc/squid/whitelist.txt"
+
+# Check if running as root
+check_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "Error: This command must be run as root"
+    exit 1
+  fi
+}
+
+# Display usage information
+show_usage() {
+  cat << EOF
+Usage: mdpc COMMAND [ARGS]
+
+MDPC Contest Network Manager
+
+Commands:
+  setup               Set up lab PC with all required software and participant account
+  reset               Reset participant account to clean state
+  restrict [USER]     Enable internet restrictions for specified user (default: participant)
+  unrestrict [USER]   Disable internet restrictions for specified user
+  add DOMAIN          Add domain to whitelist (e.g., example.com)
+  remove DOMAIN       Remove domain from whitelist
+  list                List currently whitelisted domains
+  status [USER]       Show current restriction status for specified user
+  help                Show this help message
+
+Examples:
+  sudo mdpc setup                   # Set up lab PC from scratch
+  sudo mdpc reset                   # Reset participant account
+  sudo mdpc restrict                # Restrict default user (participant)
+  sudo mdpc restrict contestant     # Restrict user "contestant"
+  sudo mdpc add codeforces.com      # Add domain to whitelist
+
+EOF
+}
+
+# Check if restrictions are active
+check_status() {
+  local user="${1:-$DEFAULT_USER}"
+  local uid
+  
+  # Get UID of specified user
+  if ! uid=$(id -u "$user" 2>/dev/null); then
+    echo "Error: User '$user' does not exist"
+    exit 1
+  fi
+  
+  local is_restricted=false
+  local service_status=""
+  
+  # Check if service is active
+  if systemctl is-enabled "mdpc-restrict-$user.service" &>/dev/null; then
+    service_status="enabled"
+    is_restricted=true
+  else
+    service_status="disabled"
+  fi
+  
+  # Check if Squid is configured for restrictions
+  local squid_config=""
+  if grep -q "whitelist dstdomain" /etc/squid/squid.conf &>/dev/null; then
+    squid_config="configured for restrictions"
+    is_restricted=true
+  else
+    squid_config="standard configuration"
+  fi
+  
+  # Check if iptables rules exist for the user
+  local chain="MDPC_${user^^}_OUT"
+  local iptables_status=""
+  if iptables -L "$chain" &>/dev/null; then
+    iptables_status="active"
+    is_restricted=true
+  else
+    iptables_status="inactive"
+  fi
+  
+  echo "Status for user '$user':"
+  echo "  Systemd service: $service_status"
+  echo "  Squid proxy: $squid_config"
+  echo "  Firewall rules: $iptables_status"
+  
+  if $is_restricted; then
+    echo "  Overall: RESTRICTIONS ACTIVE"
+  else
+    echo "  Overall: NO RESTRICTIONS"
+  fi
+  
+  # Show whitelisted domains if restrictions are active
+  if $is_restricted && [ -f "$WHITELIST" ]; then
+    echo -e "\nWhitelisted domains:"
+    grep -v "^#" "$WHITELIST" | grep -v "^$" | sort | sed 's/^/  /'
+  fi
+}
+
+# List whitelisted domains
+list_domains() {
+  if [ ! -f "$WHITELIST" ]; then
+    echo "Error: Whitelist file not found. Run 'sudo mdpc restrict' first."
+    exit 1
+  fi
+  
+  echo "Currently whitelisted domains:"
+  grep -v "^#" "$WHITELIST" | grep -v "^$" | sed 's/^\.//' | sort | sed 's/^/  /'
+}
+
+# Add domain to whitelist
+add_domain() {
+  local domain="$1"
+  
+  if [ ! -f "$WHITELIST" ]; then
+    echo "Error: Whitelist file not found. Run 'sudo mdpc restrict' first."
+    exit 1
+  fi
+  
+  # Add domain with leading dot to match subdomains
+  if grep -q ".$domain" "$WHITELIST"; then
+    echo "Domain $domain already in whitelist"
+  else
+    echo ".$domain" >> "$WHITELIST"
+    echo "Added domain: $domain"
+    systemctl restart squid
+    echo "Squid service restarted"
+  fi
+}
+
+# Remove domain from whitelist
+remove_domain() {
+  local domain="$1"
+  
+  if [ ! -f "$WHITELIST" ]; then
+    echo "Error: Whitelist file not found. Run 'sudo mdpc restrict' first."
+    exit 1
+  fi
+  
+  if grep -q ".$domain" "$WHITELIST"; then
+    sed -i "/\.${domain//\./\\.}$/d" "$WHITELIST"
+    echo "Removed domain: $domain"
+    systemctl restart squid
+    echo "Squid service restarted"
+  else
+    echo "Domain $domain not found in whitelist"
+  fi
+}
+
+# Main script logic
+main() {
+  if [ $# -lt 1 ]; then
+    show_usage
+    exit 1
+  fi
+
+  case "$1" in
+    setup)
+      check_root
+      bash "$SETUP_SCRIPT"
+      ;;
+    reset)
+      check_root
+      bash "$RESET_SCRIPT"
+      ;;
+    restrict)
+      check_root
+      user="${2:-$DEFAULT_USER}"
+      RESTRICT_USER="$user" bash "$RESTRICT_SCRIPT"
+      ;;
+    unrestrict)
+      check_root
+      user="${2:-$DEFAULT_USER}"
+      RESTRICT_USER="$user" bash "$UNRESTRICT_SCRIPT"
+      ;;
+    add)
+      check_root
+      if [ $# -ne 2 ]; then
+        echo "Error: Missing domain name"
+        echo "Usage: sudo mdpc add example.com"
+        exit 1
+      fi
+      add_domain "$2"
+      ;;
+    remove)
+      check_root
+      if [ $# -ne 2 ]; then
+        echo "Error: Missing domain name"
+        echo "Usage: sudo mdpc remove example.com"
+        exit 1
+      fi
+      remove_domain "$2"
+      ;;
+    list)
+      list_domains
+      ;;
+    status)
+      user="${2:-$DEFAULT_USER}"
+      check_status "$user"
+      ;;
+    help)
+      show_usage
+      ;;
+    *)
+      echo "Error: Unknown command '$1'"
+      show_usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
