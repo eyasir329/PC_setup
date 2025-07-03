@@ -20,13 +20,13 @@ fi
 UID_USER=$(id -u "$USER")
 
 echo "Step 2: Stop and disable systemd service"
-systemctl stop "mdpc-restrict-$USER.service" 2>/dev/null || true
-systemctl disable "mdpc-restrict-$USER.service" 2>/dev/null || true
-rm -f "/etc/systemd/system/mdpc-restrict-$USER.service"
+systemctl stop "contest-restrict-$USER.service" 2>/dev/null || true
+systemctl disable "contest-restrict-$USER.service" 2>/dev/null || true
+rm -f "/etc/systemd/system/contest-restrict-$USER.service"
 systemctl daemon-reload
 
 echo "Step 3: Remove iptables OUTPUT hook"
-CHAIN="MDPC_${USER^^}_OUT"
+CHAIN="CONTEST_${USER^^}_OUT"
 iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_USER" -j "$CHAIN" 2>/dev/null || true
 
 echo "Step 4: Clear NAT table rules for HTTP/HTTPS redirection"
@@ -46,7 +46,7 @@ if [ -f /etc/squid/squid.conf.backup ]; then
 fi
 
 echo "Step 7: Remove environment variables"
-rm -f "/etc/profile.d/mdpc-proxy-$USER.sh"
+rm -f "/etc/profile.d/contest-proxy-$USER.sh"
 
 echo "Step 8: Restore disk & plugdev groups"
 adduser "$USER" disk &>/dev/null || true

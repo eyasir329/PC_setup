@@ -1,0 +1,28 @@
+# Logs
+*.log
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.tmp
+*.temp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local test files
+test_*
+debug_*
+
+# Generated files
+*.pid

@@ -3,11 +3,11 @@ set -euo pipefail
 
 # Configuration variables
 DEFAULT_USER="participant"
-SCRIPT_DIR="/usr/local/share/mdpc"
-RESTRICT_SCRIPT="$SCRIPT_DIR/mdpc-restrict.sh"
-UNRESTRICT_SCRIPT="$SCRIPT_DIR/mdpc-unrestrict.sh"
-SETUP_SCRIPT="$SCRIPT_DIR/mdpc-setup.sh"
-RESET_SCRIPT="$SCRIPT_DIR/mdpc-reset.sh"
+SCRIPT_DIR="/usr/local/share/contest-manager"
+RESTRICT_SCRIPT="$SCRIPT_DIR/restrict.sh"
+UNRESTRICT_SCRIPT="$SCRIPT_DIR/unrestrict.sh"
+SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
+RESET_SCRIPT="$SCRIPT_DIR/reset.sh"
 WHITELIST="/etc/squid/whitelist.txt"
 
 # Check if running as root
@@ -21,9 +21,9 @@ check_root() {
 # Display usage information
 show_usage() {
   cat << EOF
-Usage: mdpc COMMAND [ARGS]
+Usage: cmanager COMMAND [ARGS]
 
-MDPC Contest Network Manager
+Contest Environment Manager
 
 Commands:
   setup [USER]        Set up lab PC with all required software and user account (default: participant)
@@ -37,13 +37,13 @@ Commands:
   help                Show this help message
 
 Examples:
-  sudo mdpc setup                   # Set up lab PC from scratch for participant
-  sudo mdpc setup contestant        # Set up lab PC for user "contestant"
-  sudo mdpc reset                   # Reset participant account
-  sudo mdpc reset contestant        # Reset contestant account
-  sudo mdpc restrict                # Restrict default user (participant)
-  sudo mdpc restrict contestant     # Restrict user "contestant"
-  sudo mdpc add codeforces.com      # Add domain to whitelist
+  sudo cmanager setup                   # Set up lab PC from scratch for participant
+  sudo cmanager setup contestant        # Set up lab PC for user "contestant"
+  sudo cmanager reset                   # Reset participant account
+  sudo cmanager reset contestant        # Reset contestant account
+  sudo cmanager restrict                # Restrict default user (participant)
+  sudo cmanager restrict contestant     # Restrict user "contestant"
+  sudo cmanager add codeforces.com      # Add domain to whitelist
 
 EOF
 }
@@ -63,7 +63,7 @@ check_status() {
   local service_status=""
   
   # Check if service is active
-  if systemctl is-enabled "mdpc-restrict-$user.service" &>/dev/null; then
+  if systemctl is-enabled "contest-restrict-$user.service" &>/dev/null; then
     service_status="enabled"
     is_restricted=true
   else
@@ -80,7 +80,7 @@ check_status() {
   fi
   
   # Check if iptables rules exist for the user
-  local chain="MDPC_${user^^}_OUT"
+  local chain="CONTEST_${user^^}_OUT"
   local iptables_status=""
   if iptables -L "$chain" &>/dev/null; then
     iptables_status="active"
@@ -110,7 +110,7 @@ check_status() {
 # List whitelisted domains
 list_domains() {
   if [ ! -f "$WHITELIST" ]; then
-    echo "Error: Whitelist file not found. Run 'sudo mdpc restrict' first."
+    echo "Error: Whitelist file not found. Run 'sudo cmanager restrict' first."
     exit 1
   fi
   
@@ -123,7 +123,7 @@ add_domain() {
   local domain="$1"
   
   if [ ! -f "$WHITELIST" ]; then
-    echo "Error: Whitelist file not found. Run 'sudo mdpc restrict' first."
+    echo "Error: Whitelist file not found. Run 'sudo cmanager restrict' first."
     exit 1
   fi
   
@@ -143,7 +143,7 @@ remove_domain() {
   local domain="$1"
   
   if [ ! -f "$WHITELIST" ]; then
-    echo "Error: Whitelist file not found. Run 'sudo mdpc restrict' first."
+    echo "Error: Whitelist file not found. Run 'sudo cmanager restrict' first."
     exit 1
   fi
   
@@ -189,7 +189,7 @@ main() {
       check_root
       if [ $# -ne 2 ]; then
         echo "Error: Missing domain name"
-        echo "Usage: sudo mdpc add example.com"
+        echo "Usage: sudo cmanager add example.com"
         exit 1
       fi
       add_domain "$2"
@@ -198,7 +198,7 @@ main() {
       check_root
       if [ $# -ne 2 ]; then
         echo "Error: Missing domain name"
-        echo "Usage: sudo mdpc remove example.com"
+        echo "Usage: sudo cmanager remove example.com"
         exit 1
       fi
       remove_domain "$2"

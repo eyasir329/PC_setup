@@ -47,7 +47,7 @@ if ! id "$USER" &>/dev/null; then
   exit 1
 fi
 UID_USER=$(id -u "$USER")
-CHAIN="MDPC_${USER^^}_OUT"  # Uppercase username for chain name
+CHAIN="CONTEST_${USER^^}_OUT"  # Uppercase username for chain name
 
 echo "Step 4: Configure Squid proxy for domain-based filtering"
 # Back up original config if it exists and this is first run
@@ -178,20 +178,20 @@ iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner --uid-owner "$UID_USER" -j
 iptables -A "$CHAIN" -j REJECT
 
 # Create environment variables for the user
-cat > "/etc/profile.d/mdpc-proxy-$USER.sh" << EOF
+cat > "/etc/profile.d/contest-proxy-$USER.sh" << EOF
 if [ "\$(id -un)" = "$USER" ]; then
     export http_proxy=http://localhost:3128
     export https_proxy=http://localhost:3128
     export no_proxy=localhost,127.0.0.1
 fi
 EOF
-chmod +x "/etc/profile.d/mdpc-proxy-$USER.sh"
+chmod +x "/etc/profile.d/contest-proxy-$USER.sh"
 
 echo "Step 6: Create systemd service to run at boot"
 # Create a systemd service file with user-specific name
-cat > "/etc/systemd/system/mdpc-restrict-$USER.service" << EOF
+cat > "/etc/systemd/system/contest-restrict-$USER.service" << EOF
 [Unit]
-Description=MDPC Internet Restriction Service for user $USER
+Description=Contest Environment Internet Restriction Service for user $USER
 After=network.target squid.service
 Wants=squid.service
 
@@ -207,7 +207,7 @@ EOF
 
 # Enable and start the service
 systemctl daemon-reload
-systemctl enable "mdpc-restrict-$USER.service"
+systemctl enable "contest-restrict-$USER.service"
 echo " → Boot-time service installed and enabled"
 
 echo "Step 7: Block mounts via Polkit"
@@ -238,6 +238,6 @@ udevadm control --reload-rules && udevadm trigger
 
 echo "============================================"
 echo " Restriction for user '$USER' completed!"
-echo " Use 'mdpc add domain.com' to add more domains"
-echo " Use 'mdpc status $USER' to check current restrictions"
+echo " Use 'cmanager add domain.com' to add more domains"
+echo " Use 'cmanager status $USER' to check current restrictions"
 echo "============================================"
