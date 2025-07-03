@@ -188,20 +188,27 @@ fi
 EOF
 chmod +x /etc/profile.d/participant-proxy.sh
 
-echo "Step 6: Configure cron job"
-CRON_FILE="/etc/cron.d/participant-whitelist"
-CRON_LINE="*/15 * * * * root bash \"$SCRIPT_PATH\" >/dev/null 2>&1"
+echo "Step 6: Create systemd service to run at boot"
+# Create a systemd service file
+cat > /etc/systemd/system/participant-restrict.service << EOF
+[Unit]
+Description=Participant Internet Restriction Service
+After=network.target squid.service
+Wants=squid.service
 
-# Install or update
-if ! grep -Fxq "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
-  cat <<EOF >"$CRON_FILE"
-# Refresh whitelist every 15 minutes
-$CRON_LINE
+[Service]
+Type=oneshot
+ExecStart=$SCRIPT_PATH
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
 EOF
-  echo " → cron job installed: $CRON_LINE"
-else
-  echo " → cron job already up‑to‑date"
-fi
+
+# Enable and start the service
+systemctl daemon-reload
+systemctl enable participant-restrict.service
+echo " → Boot-time service installed and enabled"
 
 echo "Step 7: Block mounts via Polkit"
 PKLA_DIR="/etc/polkit-1/localauthority/50-local.d"
