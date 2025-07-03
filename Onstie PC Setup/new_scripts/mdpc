@@ -26,8 +26,8 @@ Usage: mdpc COMMAND [ARGS]
 MDPC Contest Network Manager
 
 Commands:
-  setup               Set up lab PC with all required software and participant account
-  reset               Reset participant account to clean state
+  setup [USER]        Set up lab PC with all required software and user account (default: participant)
+  reset [USER]        Reset user account to clean state (default: participant)
   restrict [USER]     Enable internet restrictions for specified user (default: participant)
   unrestrict [USER]   Disable internet restrictions for specified user
   add DOMAIN          Add domain to whitelist (e.g., example.com)
@@ -37,8 +37,10 @@ Commands:
   help                Show this help message
 
 Examples:
-  sudo mdpc setup                   # Set up lab PC from scratch
+  sudo mdpc setup                   # Set up lab PC from scratch for participant
+  sudo mdpc setup contestant        # Set up lab PC for user "contestant"
   sudo mdpc reset                   # Reset participant account
+  sudo mdpc reset contestant        # Reset contestant account
   sudo mdpc restrict                # Restrict default user (participant)
   sudo mdpc restrict contestant     # Restrict user "contestant"
   sudo mdpc add codeforces.com      # Add domain to whitelist
@@ -165,11 +167,13 @@ main() {
   case "$1" in
     setup)
       check_root
-      bash "$SETUP_SCRIPT"
+      user="${2:-$DEFAULT_USER}"
+      SETUP_USER="$user" bash "$SETUP_SCRIPT"
       ;;
     reset)
       check_root
-      bash "$RESET_SCRIPT"
+      user="${2:-$DEFAULT_USER}"
+      RESET_USER="$user" bash "$RESET_SCRIPT"
       ;;
     restrict)
       check_root
