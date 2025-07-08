@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Use RESTRICT_USER if set, otherwise default to "participant"
-USER="${1:-participant}"
+USER="${RESTRICT_USER:-${1:-participant}}"
 
 # Configuration
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -35,14 +35,36 @@ echo "→ Creating configuration directories..."
 mkdir -p "$(dirname "$SYSTEM_WHITELIST")"
 mkdir -p "$IP_CACHE_DIR"
 
-# Copy whitelist file if it exists
+# Handle whitelist file
 if [ -f "$WHITELIST_FILE" ]; then
-    echo "→ Copying whitelist.txt to system location..."
+    # Local whitelist.txt exists - copy it to system location
+    echo "→ Copying local whitelist.txt to system location..."
     cp "$WHITELIST_FILE" "$SYSTEM_WHITELIST"
-    echo "✅ Whitelist copied successfully."
+    echo "✅ Local whitelist copied successfully."
+elif [ -f "$SYSTEM_WHITELIST" ]; then
+    # System whitelist already exists
+    echo "→ Using existing system whitelist at $SYSTEM_WHITELIST"
+    echo "✅ System whitelist found."
 else
-    echo "❌ Error: $WHITELIST_FILE not found!" >&2
-    exit 1
+    # Neither whitelist exists - create a default one
+    echo "→ No whitelist found. Creating a default whitelist..."
+    cat > "$SYSTEM_WHITELIST" << EOF
+# Default contest platforms whitelist
+# Add more domains as needed using: sudo cmanager add domain.com
+codeforces.com
+codechef.com
+vjudge.net
+atcoder.jp
+hackerrank.com
+hackerearth.com
+topcoder.com
+spoj.com
+lightoj.com
+onlinejudge.org
+uva.onlinejudge.org
+cses.fi
+EOF
+    echo "✅ Default whitelist created successfully."
 fi
 
 # Step 2: Create IP resolution script
