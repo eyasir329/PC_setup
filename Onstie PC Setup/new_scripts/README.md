@@ -1,6 +1,6 @@
 # Contest Environment Manager
 
-A comprehensive system for managing contest environments with internet restrictions, user account management, and automated setup for programming contests.
+A comprehensive system for managing programming contest environments with internet restrictions, user account management, and automated setup for programming contests.
 
 ## Features
 
@@ -40,11 +40,6 @@ sudo cmanager setup contestant
 # Restrict internet access for a user
 sudo cmanager restrict participant
 
-# Manage whitelist with helper script
-sudo ./whitelist-manager.sh sync          # Sync with allowed.txt
-sudo ./whitelist-manager.sh add github.com # Add new domain
-sudo ./whitelist-manager.sh update participant # Update IP rules
-
 # Check restriction status
 sudo cmanager status participant
 
@@ -70,15 +65,45 @@ sudo cmanager unrestrict participant
 
 ## Whitelist Management
 
-The system includes a helper script for advanced whitelist management:
+The system uses simple text files for domain management:
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `sync` | Sync whitelist with allowed.txt file | `sudo ./whitelist-manager.sh sync` |
-| `add DOMAIN` | Add domain to whitelist | `sudo ./whitelist-manager.sh add google.com` |
-| `remove DOMAIN` | Remove domain from whitelist | `sudo ./whitelist-manager.sh remove facebook.com` |
-| `list` | List current whitelisted domains | `./whitelist-manager.sh list` |
-| `update USER` | Update IP rules for user | `sudo ./whitelist-manager.sh update participant` |
+### Configuration Files
+
+| File | Location | Description |
+|------|----------|-------------|
+| `whitelist.txt` | Current directory | Local whitelist file for testing |
+| `allowed.txt` | `/usr/local/etc/contest-restriction/` | System-wide whitelist file |
+
+### Workflow
+
+1. **Edit the whitelist file** directly with allowed domains:
+   ```bash
+   # Edit system whitelist
+   sudo nano /usr/local/etc/contest-restriction/allowed.txt
+   
+   # Or edit local whitelist for testing
+   nano whitelist.txt
+   ```
+
+2. **Add domains** (one per line):
+   ```
+   codeforces.com
+   atcoder.jp
+   codechef.com
+   ```
+
+3. **Apply changes** by running the restrict command:
+   ```bash
+   sudo cmanager restrict participant
+   ```
+
+### Example whitelist.txt
+```
+codeforces.com
+atcoder.jp
+codechef.com
+leetcode.com
+```
 
 ## How It Works
 
@@ -147,10 +172,9 @@ The system includes common contest platforms:
 - Contest sites: codeforces.com, codechef.com, atcoder.jp, hackerrank.com, etc.
 - You can add more domains using the whitelist-manager.sh script
 
-You can customize the default list by editing the `allowed.txt` file and running:
+You can customize the default list by editing the `whitelist.txt` file and running:
 ```bash
-sudo ./whitelist-manager.sh sync
-sudo ./whitelist-manager.sh update participant
+sudo cmanager update
 ```
 
 ### Customization

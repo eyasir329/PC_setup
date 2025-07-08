@@ -57,27 +57,18 @@ mkdir -p "$(dirname "$WHITELIST_CONFIG")"
 # Use the centralized whitelist file
 if [ -f "$WHITELIST_CONFIG" ]; then
     cp "$WHITELIST_CONFIG" "$ALLOWED_DOMAINS"
-elif [ -f "allowed.txt" ]; then
-    cp "allowed.txt" "$ALLOWED_DOMAINS"
-else
-    echo "[WARNING] No whitelist found. Creating default allowed.txt"
-    cat > "$ALLOWED_DOMAINS" << EOF
-codeforces.com
-codechef.com
-vjudge.net
-atcoder.jp
-hackerrank.com
-hackerearth.com
-topcoder.com
-spoj.com
-lightoj.com
-onlinejudge.org
-cses.fi
-bapsoj.com
-toph.co
-EOF
+elif [ -f "whitelist.txt" ]; then
+    echo "Using local whitelist.txt file"
+    cp "whitelist.txt" "$ALLOWED_DOMAINS"
     # Also create the centralized whitelist for future use
-    cp "$ALLOWED_DOMAINS" "$WHITELIST_CONFIG"
+    cp "whitelist.txt" "$WHITELIST_CONFIG"
+else
+    echo "[ERROR] No whitelist found. Please create a whitelist.txt file with allowed domains."
+    echo "Example whitelist.txt content:"
+    echo "  codeforces.com"
+    echo "  codechef.com" 
+    echo "  atcoder.jp"
+    exit 1
 fi
 
 echo "Step 5: Configure selective internet blocking with iptables"
