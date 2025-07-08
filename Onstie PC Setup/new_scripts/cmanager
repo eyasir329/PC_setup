@@ -8,7 +8,7 @@ RESTRICT_SCRIPT="$SCRIPT_DIR/restrict.sh"
 UNRESTRICT_SCRIPT="$SCRIPT_DIR/unrestrict.sh"
 SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
 RESET_SCRIPT="$SCRIPT_DIR/reset.sh"
-WHITELIST="/etc/squid/whitelist.txt"
+WHITELIST_CONFIG="/usr/local/etc/contest-restriction/allowed.txt"
 
 # Check if running as root
 check_root() {
@@ -33,6 +33,7 @@ Commands:
   add DOMAIN          Add domain to whitelist (e.g., example.com)
   remove DOMAIN       Remove domain from whitelist
   list                List currently whitelisted domains
+  update              Update IP rules for all active restrictions
   status [USER]       Show current restriction status for specified user
   help                Show this help message
 
@@ -44,6 +45,7 @@ Examples:
   sudo cmanager restrict                # Restrict default user (participant)
   sudo cmanager restrict contestant     # Restrict user "contestant"
   sudo cmanager add codeforces.com      # Add domain to whitelist
+  sudo cmanager update                  # Update IP rules after adding domains
 
 EOF
 }
@@ -70,15 +72,6 @@ check_status() {
     service_status="disabled"
   fi
   
-  # Check if Squid is configured for restrictions
-  local squid_config=""
-  if grep -q "whitelist dstdomain" /etc/squid/squid.conf &>/dev/null; then
-    squid_config="configured for restrictions"
-    is_restricted=true
-  else
-    squid_config="standard configuration"
-  fi
-  
   # Check if iptables rules exist for the user
   local chain="CONTEST_${user^^}_OUT"
   local iptables_status=""
@@ -91,7 +84,6 @@ check_status() {
   
   echo "Status for user '$user':"
   echo "  Systemd service: $service_status"
-  echo "  Squid proxy: $squid_config"
   echo "  Firewall rules: $iptables_status"
   
   if $is_restricted; then
@@ -101,40 +93,65 @@ check_status() {
   fi
   
   # Show whitelisted domains if restrictions are active
-  if $is_restricted && [ -f "$WHITELIST" ]; then
+  if $is_restricted && [ -f "$WHITELIST_CONFIG" ]; then
     echo -e "\nWhitelisted domains:"
-    grep -v "^#" "$WHITELIST" | grep -v "^$" | sort | sed 's/^/  /'
+    grep -v "^#" "$WHITELIST_CONFIG" | grep -v "^$" | sort | sed 's/^/  /'
   fi
 }
 
 # List whitelisted domains
 list_domains() {
-  if [ ! -f "$WHITELIST" ]; then
+  if [ ! -f "$WHITELIST_CONFIG" ]; then
     echo "Error: Whitelist file not found. Run 'sudo cmanager restrict' first."
     exit 1
   fi
   
   echo "Currently whitelisted domains:"
-  grep -v "^#" "$WHITELIST" | grep -v "^$" | sed 's/^\.//' | sort | sed 's/^/  /'
+  grep -v "^#" "$WHITELIST_CONFIG" | grep -v "^$" | sort | sed 's/^/  /'
+}
+
+# Initialize whitelist file
+init_whitelist() {
+  mkdir -p "$(dirname "$WHITELIST_CONFIG")"
+  if [ ! -f "$WHITELIST_CONFIG" ]; then
+    cat > "$WHITELIST_CONFIG" << EOF
+# Contest platforms and related domains
+codeforces.com
+codechef.com
+vjudge.net
+atcoder.jp
+hackerrank.com
+hackerearth.com
+topcoder.com
+spoj.com
+lightoj.com
+onlinejudge.org
+cses.fi
+bapsoj.com
+toph.co
+EOF
+    echo "✅ Default whitelist created"
+  fi
 }
 
 # Add domain to whitelist
 add_domain() {
   local domain="$1"
   
-  if [ ! -f "$WHITELIST" ]; then
-    echo "Error: Whitelist file not found. Run 'sudo cmanager restrict' first."
-    exit 1
-  fi
+  init_whitelist
   
-  # Add domain with leading dot to match subdomains
-  if grep -q ".$domain" "$WHITELIST"; then
+  # Clean domain name
+  domain="${domain#.}"
+  domain="${domain#http://}"
+  domain="${domain#https://}"
+  domain="${domain%%/*}"
+  
+  if grep -q "^${domain}$" "$WHITELIST_CONFIG" 2>/dev/null; then
     echo "Domain $domain already in whitelist"
   else
-    echo ".$domain" >> "$WHITELIST"
-    echo "Added domain: $domain"
-    systemctl restart squid
-    echo "Squid service restarted"
+    echo "$domain" >> "$WHITELIST_CONFIG"
+    echo "✅ Added domain: $domain"
+    echo "Run 'sudo cmanager update' to apply changes to active restrictions"
   fi
 }
 
@@ -142,19 +159,49 @@ add_domain() {
 remove_domain() {
   local domain="$1"
   
-  if [ ! -f "$WHITELIST" ]; then
-    echo "Error: Whitelist file not found. Run 'sudo cmanager restrict' first."
+  if [ ! -f "$WHITELIST_CONFIG" ]; then
+    echo "Error: Whitelist file not found."
     exit 1
   fi
   
-  if grep -q ".$domain" "$WHITELIST"; then
-    sed -i "/\.${domain//\./\\.}$/d" "$WHITELIST"
-    echo "Removed domain: $domain"
-    systemctl restart squid
-    echo "Squid service restarted"
+  # Clean domain name
+  domain="${domain#.}"
+  domain="${domain#http://}"
+  domain="${domain#https://}"
+  domain="${domain%%/*}"
+  
+  if grep -q "^${domain}$" "$WHITELIST_CONFIG" 2>/dev/null; then
+    sed -i "/^${domain//\./\\.}$/d" "$WHITELIST_CONFIG"
+    echo "✅ Removed domain: $domain"
+    echo "Run 'sudo cmanager update' to apply changes to active restrictions"
   else
     echo "Domain $domain not found in whitelist"
   fi
+}
+
+# Update IP rules for all active restrictions
+update_restrictions() {
+  echo "Updating IP rules for all active restrictions..."
+  
+  # Find all active restriction services
+  for service_file in /etc/systemd/system/contest-restrict-*.service; do
+    if [ -f "$service_file" ]; then
+      # Extract username from service filename
+      service_name=$(basename "$service_file" .service)
+      user="${service_name#contest-restrict-}"
+      
+      if systemctl is-enabled "$service_name" &>/dev/null; then
+        echo "Updating restrictions for user: $user"
+        if command -v update-contest-whitelist &>/dev/null; then
+          update-contest-whitelist "$user"
+        else
+          echo "Warning: update-contest-whitelist script not found"
+        fi
+      fi
+    fi
+  done
+  
+  echo "✅ All active restrictions updated"
 }
 
 # Main script logic
@@ -205,6 +252,10 @@ main() {
       ;;
     list)
       list_domains
+      ;;
+    update)
+      check_root
+      update_restrictions
       ;;
     status)
       user="${2:-$DEFAULT_USER}"

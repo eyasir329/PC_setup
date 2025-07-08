@@ -8,16 +8,7 @@ echo "Starting Lab PC Setup for user '$USER': $(date)"
 echo "============================================"
 
 echo "============================================"
-ec# Make sure $USER is part of necessary groups
-sudo usermod -aG sudo,adm,dialout,cdrom,floppy,audio,dip,video,plugdev,netdev "$USER"
-
-# Set full ownership and permissions for $USER's home
-sudo chown -R "$USER:$USER" "/home/$USER"
-sudo chmod -R u+rwX "/home/$USER"
-
-# Create Code::Blocks project directory
-sudo -u "$USER" mkdir -p "/home/$USER/cb_projects"
-sudo chmod -R 755 "/home/$USER/cb_projects"ng Step 1: Force delete and recreate '$USER' account"
+echo "Starting Step 1: Force delete and recreate '$USER' account"
 echo "============================================"
 
 # Force delete user account without removing the home directory

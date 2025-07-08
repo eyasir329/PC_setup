@@ -5,10 +5,10 @@ A comprehensive system for managing contest environments with internet restricti
 ## Features
 
 - **User Account Management**: Set up and reset user accounts with pre-configured development tools
-- **Internet Restrictions**: Whitelist-based internet access control for contest environments
+- **Internet Restrictions**: IP-based internet access control for contest environments  
 - **USB Device Blocking**: Prevent access to USB storage devices during contests
 - **Automated Software Installation**: Install and configure development tools (VS Code, compilers, etc.)
-- **Domain Whitelisting**: Allow access to specific contest platforms and their resources
+- **Domain Whitelisting**: Allow access to specific contest platforms and their dependencies
 
 ## Quick Start
 
@@ -40,9 +40,10 @@ sudo cmanager setup contestant
 # Restrict internet access for a user
 sudo cmanager restrict participant
 
-# Add allowed domains
-sudo cmanager add codeforces.com
-sudo cmanager add codechef.com
+# Manage whitelist with helper script
+sudo ./whitelist-manager.sh sync          # Sync with allowed.txt
+sudo ./whitelist-manager.sh add github.com # Add new domain
+sudo ./whitelist-manager.sh update participant # Update IP rules
 
 # Check restriction status
 sudo cmanager status participant
@@ -64,19 +65,29 @@ sudo cmanager unrestrict participant
 | `reset [USER]` | Reset user account to clean state | `sudo cmanager reset participant` |
 | `restrict [USER]` | Enable internet restrictions for user | `sudo cmanager restrict participant` |
 | `unrestrict [USER]` | Remove all restrictions for user | `sudo cmanager unrestrict participant` |
-| `add DOMAIN` | Add domain to whitelist | `sudo cmanager add example.com` |
-| `remove DOMAIN` | Remove domain from whitelist | `sudo cmanager remove example.com` |
-| `list` | List whitelisted domains | `sudo cmanager list` |
 | `status [USER]` | Show restriction status | `sudo cmanager status participant` |
 | `help` | Show help message | `sudo cmanager help` |
 
+## Whitelist Management
+
+The system includes a helper script for advanced whitelist management:
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `sync` | Sync whitelist with allowed.txt file | `sudo ./whitelist-manager.sh sync` |
+| `add DOMAIN` | Add domain to whitelist | `sudo ./whitelist-manager.sh add google.com` |
+| `remove DOMAIN` | Remove domain from whitelist | `sudo ./whitelist-manager.sh remove facebook.com` |
+| `list` | List current whitelisted domains | `./whitelist-manager.sh list` |
+| `update USER` | Update IP rules for user | `sudo ./whitelist-manager.sh update participant` |
+
 ## How It Works
 
-### Internet Restrictions
-- Uses **Squid proxy** for domain-based filtering
-- **iptables** rules for user-specific traffic control  
-- **DNS resolution** allowed for all domains
-- **Transparent proxy** redirection for HTTP/HTTPS
+### Internet Restrictions (New Approach)
+- **IP-based whitelisting** - Resolves allowed domains to IP addresses
+- **Full access for whitelisted domains** - Contest sites can access any resources they need
+- **Automatic subdomain support** - Includes www, api, cdn, static, assets subdomains
+- **DNS resolution allowed** for domain lookups
+- **Dynamic IP updates** via helper scripts
 
 ### USB Storage Blocking
 - **udev rules** to block USB storage devices
@@ -100,13 +111,13 @@ sudo cmanager unrestrict participant
 - Development tools: `gcc`, `g++`, `python3`, `git`
 - IDEs: `code` (VS Code), `codeblocks`
 - Browsers: `firefox`, `google-chrome-stable`
-- Utilities: `squid`, `iptables`, `udev`
+- Network utilities: `iptables`, `dnsutils`
 
 ### File Locations
 - Scripts: `/usr/local/share/contest-manager/`
-- Configuration: `/etc/squid/whitelist.txt`
+- Whitelist: `/usr/local/etc/contest-restriction/allowed.txt`
 - User backups: `/opt/{username}_backup/`
-- Proxy settings: `/etc/profile.d/contest-proxy-{user}.sh`
+- Helper scripts: `/usr/local/bin/whitelist-manager.sh`, `/usr/local/bin/update-contest-whitelist`
 
 ## Configuration
 
@@ -132,10 +143,15 @@ sudo pcmgr status
 ```
 
 ### Default Whitelisted Domains
-The system includes common contest platforms and CDNs:
-- Contest sites: codeforces.com, codechef.com, atcoder.jp, etc.
-- CDNs: cloudflare.com, googleapis.com, jsdelivr.net, etc.
-- Resources: fonts, analytics, recaptcha services
+The system includes common contest platforms:
+- Contest sites: codeforces.com, codechef.com, atcoder.jp, hackerrank.com, etc.
+- You can add more domains using the whitelist-manager.sh script
+
+You can customize the default list by editing the `allowed.txt` file and running:
+```bash
+sudo ./whitelist-manager.sh sync
+sudo ./whitelist-manager.sh update participant
+```
 
 ### Customization
 - Modify `setup.sh` to change installed software
@@ -145,9 +161,10 @@ The system includes common contest platforms and CDNs:
 ## Security Features
 
 - User-specific iptables rules prevent network bypass
+- IP-based whitelisting allows full access to contest domains and their dependencies
 - Service persistence across reboots via systemd
-- Comprehensive USB device blocking
-- Proxy authentication and access control
+- Comprehensive USB device blocking via udev and polkit
+- No proxy requirements - direct internet access for whitelisted domains
 
 ## Troubleshooting
 
@@ -163,14 +180,14 @@ The system includes common contest platforms and CDNs:
 # Check service status
 sudo systemctl status contest-restrict-participant.service
 
-# View iptables rules
-sudo iptables -L -n -v
+# View iptables rules for user
+sudo iptables -L CONTEST_PARTICIPANT_OUT -n -v
 
-# Check squid configuration
-sudo squid -k parse
+# Update whitelist IPs manually
+sudo update-contest-whitelist participant
 
-# Test proxy connectivity
-curl -x localhost:3128 http://example.com
+# Test domain resolution
+dig codeforces.com
 ```
 
 ## Contributing

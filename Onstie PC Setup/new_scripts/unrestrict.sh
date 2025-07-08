@@ -30,8 +30,7 @@ CHAIN="CONTEST_${USER^^}_OUT"
 iptables -t filter -D OUTPUT -m owner --uid-owner "$UID_USER" -j "$CHAIN" 2>/dev/null || true
 
 echo "Step 4: Clear NAT table rules for HTTP/HTTPS redirection"
-iptables -t nat -D OUTPUT -p tcp --dport 80 -m owner --uid-owner "$UID_USER" -j REDIRECT --to-port 3128 2>/dev/null || true
-iptables -t nat -D OUTPUT -p tcp --dport 443 -m owner --uid-owner "$UID_USER" -j REDIRECT --to-port 3128 2>/dev/null || true
+# No NAT rules in new approach, but keeping for compatibility
 
 echo "Step 5: Flush & delete iptables chain"
 if iptables -t filter -L "$CHAIN" &>/dev/null; then
@@ -39,14 +38,28 @@ if iptables -t filter -L "$CHAIN" &>/dev/null; then
   iptables -t filter -X "$CHAIN"
 fi
 
-echo "Step 6: Restore Squid configuration"
+echo "Step 6: Clean up legacy configuration files"
+# Remove legacy Squid configuration if it exists
 if [ -f /etc/squid/squid.conf.backup ]; then
-  mv /etc/squid/squid.conf.backup /etc/squid/squid.conf
-  systemctl restart squid
+  echo "Restoring original Squid configuration..."
+  mv /etc/squid/squid.conf.backup /etc/squid/squid.conf 2>/dev/null || true
+  systemctl restart squid 2>/dev/null || true
 fi
 
+# Remove contest-specific Squid files
+rm -f /etc/squid/whitelist.txt
+rm -rf "/etc/squid/acls/restricted_uid_$USER.txt"
+
 echo "Step 7: Remove environment variables"
+# Remove proxy files (legacy)
 rm -f "/etc/profile.d/contest-proxy-$USER.sh"
+rm -f "/etc/profile.d/mdpc-proxy-$USER.sh"
+
+# Clean up whitelist helper scripts
+rm -f /tmp/resolve_whitelist.sh
+rm -f /tmp/allowed_ips.txt
+rm -f /usr/local/bin/update-contest-whitelist
+rm -f /usr/local/bin/contest-dns-bypass
 
 echo "Step 8: Restore disk & plugdev groups"
 adduser "$USER" disk &>/dev/null || true
