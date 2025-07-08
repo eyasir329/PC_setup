@@ -31,6 +31,17 @@ cp "$SCRIPT_DIR/unrestrict.sh" /usr/local/share/contest-manager/
 cp "$SCRIPT_DIR/setup.sh" /usr/local/share/contest-manager/
 cp "$SCRIPT_DIR/reset.sh" /usr/local/share/contest-manager/
 
+# Copy whitelist file if it exists
+if [ -f "$SCRIPT_DIR/whitelist.txt" ]; then
+  echo "Copying whitelist.txt file..."
+  mkdir -p /usr/local/etc/contest-restriction/
+  cp "$SCRIPT_DIR/whitelist.txt" /usr/local/etc/contest-restriction/allowed.txt
+  chmod 644 /usr/local/etc/contest-restriction/allowed.txt
+else
+  echo "Warning: whitelist.txt not found in $SCRIPT_DIR"
+  echo "You will need to create it manually or run 'cmanager add domain.com' to add domains"
+fi
+
 # Set correct permissions
 chmod 755 /usr/local/share/contest-manager/cmanager
 chmod 755 /usr/local/share/contest-manager/restrict.sh
