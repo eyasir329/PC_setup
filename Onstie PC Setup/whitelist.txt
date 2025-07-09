@@ -1,0 +1,15 @@
+atcoder.jp
+bapsoj.org
+codechef.com
+codeforces.com
+codeforces.org
+cses.fi
+hackerearth.com
+hackerrank.com
+lightoj.com
+onlinejudge.org
+spoj.com
+topcoder.com
+toph.co
+uva.onlinejudge.org
+vjudge.net
