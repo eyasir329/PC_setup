@@ -1,158 +1,306 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-# Use RESTRICT_USER if set, otherwise default to "participant"
-USER="${RESTRICT_USER:-${1:-participant}}"
+# Contest Environment Unrestriction Script
+# This script removes all internet and USB storage restrictions for contest participants
+# reversing the changes made by restrict.sh
 
 # Configuration
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-SYSTEM_WHITELIST="/usr/local/etc/contest-restriction/allowed.txt"
-IP_CACHE_DIR="/var/cache/contest-restriction"
-IP_CACHE_FILE="$IP_CACHE_DIR/resolved-ips.txt"
-UPDATE_SCRIPT="/usr/local/bin/update-contest-whitelist"
-SYSTEMD_SERVICE="contest-restrict-$USER.service"
-CRON_JOB="/etc/cron.d/contest-whitelist-updater"
-USB_RULES="/etc/udev/rules.d/99-contest-usb-block.rules"
-POLKIT_RULES="/etc/polkit-1/rules.d/99-contest-block-mount.rules"
+DEFAULT_USER="participant"
+RESTRICT_USER="${1:-$DEFAULT_USER}"
+CONFIG_DIR="/usr/local/etc/contest-restriction"
+WHITELIST_FILE="$CONFIG_DIR/whitelist.txt"
+DEPENDENCIES_FILE="$CONFIG_DIR/dependencies.txt"
+HELPER_SCRIPT="/usr/local/bin/update-contest-whitelist"
+CHAIN_PREFIX="CONTEST"
+CONTEST_SERVICE="contest-restrict-$RESTRICT_USER"
 
 echo "============================================"
-echo "Starting Internet Restriction Removal for user '$USER': $(date)"
+echo "Contest Environment Unrestriction - User: '$RESTRICT_USER'"
+echo "Starting at: $(date)"
 echo "============================================"
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
-    echo "❌ This script must be run as root." >&2
-    exit 1
+  echo "❌ Error: This script must be run as root"
+  echo "   Reason: Required to remove system-level restrictions"
+  exit 1
 fi
 
-# Step 1: Check if user exists
-echo "============================================"
-echo "Step 1: Checking user existence"
-echo "============================================"
-
-if ! id "$USER" &>/dev/null; then
-    echo "❌ Error: User $USER does not exist!" >&2
-    exit 1
+# Ensure the user exists
+if ! id "$RESTRICT_USER" &>/dev/null; then
+  echo "❌ Error: User '$RESTRICT_USER' does not exist"
+  exit 1
 fi
-USER_ID=$(id -u "$USER")
-echo "→ Found user $USER with UID $USER_ID"
 
-# Step 2: Stop and disable systemd service
 echo "============================================"
-echo "Step 2: Stopping systemd service"
+echo "Step 1: Remove Systemd Services"
 echo "============================================"
 
-echo "→ Stopping and disabling $SYSTEMD_SERVICE..."
-systemctl stop "$SYSTEMD_SERVICE" 2>/dev/null || true
-systemctl disable "$SYSTEMD_SERVICE" 2>/dev/null || true
-rm -f "/etc/systemd/system/$SYSTEMD_SERVICE"
+echo "→ Stopping and disabling systemd services..."
+
+# Stop and disable timer
+if systemctl is-active --quiet "$CONTEST_SERVICE.timer"; then
+  echo "→ Stopping systemd timer: $CONTEST_SERVICE.timer"
+  systemctl stop "$CONTEST_SERVICE.timer"
+  if [[ $? -eq 0 ]]; then
+    echo "✅ Timer stopped successfully"
+  else
+    echo "❌ Failed to stop timer" >&2
+  fi
+fi
+
+if systemctl is-enabled --quiet "$CONTEST_SERVICE.timer"; then
+  echo "→ Disabling systemd timer: $CONTEST_SERVICE.timer"
+  systemctl disable "$CONTEST_SERVICE.timer"
+  if [[ $? -eq 0 ]]; then
+    echo "✅ Timer disabled successfully"
+  else
+    echo "❌ Failed to disable timer" >&2
+  fi
+fi
+
+# Stop and disable service
+if systemctl is-active --quiet "$CONTEST_SERVICE.service"; then
+  echo "→ Stopping systemd service: $CONTEST_SERVICE.service"
+  systemctl stop "$CONTEST_SERVICE.service"
+  if [[ $? -eq 0 ]]; then
+    echo "✅ Service stopped successfully"
+  else
+    echo "❌ Failed to stop service" >&2
+  fi
+fi
+
+if systemctl is-enabled --quiet "$CONTEST_SERVICE.service"; then
+  echo "→ Disabling systemd service: $CONTEST_SERVICE.service"
+  systemctl disable "$CONTEST_SERVICE.service"
+  if [[ $? -eq 0 ]]; then
+    echo "✅ Service disabled successfully"
+  else
+    echo "❌ Failed to disable service" >&2
+  fi
+fi
+
+# Remove systemd files
+echo "→ Removing systemd service files..."
+if [[ -f "/etc/systemd/system/$CONTEST_SERVICE.service" ]]; then
+  rm -f "/etc/systemd/system/$CONTEST_SERVICE.service"
+  echo "✅ Service file removed"
+fi
+
+if [[ -f "/etc/systemd/system/$CONTEST_SERVICE.timer" ]]; then
+  rm -f "/etc/systemd/system/$CONTEST_SERVICE.timer"
+  echo "✅ Timer file removed"
+fi
+
+# Reload systemd daemon
+echo "→ Reloading systemd daemon..."
 systemctl daemon-reload
-echo "✅ Systemd service stopped and removed."
-
-# Step 3: Remove iptables rules
-echo "============================================"
-echo "Step 3: Removing iptables rules"
-echo "============================================"
-
-echo "→ Removing iptables rules for user $USER..."
-CHAIN="CONTEST_${USER^^}_OUT"
-# Remove the OUTPUT hook
-iptables -D OUTPUT -m owner --uid-owner "$USER_ID" -j "$CHAIN" 2>/dev/null || true
-ip6tables -D OUTPUT -m owner --uid-owner "$USER_ID" -j "$CHAIN" 2>/dev/null || true
-
-# Flush and delete the chain
-if iptables -L "$CHAIN" &>/dev/null 2>&1; then
-    iptables -F "$CHAIN"
-    iptables -X "$CHAIN"
-    echo "→ IPv4 iptables chain removed."
-fi
-
-if ip6tables -L "$CHAIN" &>/dev/null 2>&1; then
-    ip6tables -F "$CHAIN"
-    ip6tables -X "$CHAIN"
-    echo "→ IPv6 iptables chain removed."
-fi
-
-# Save iptables rules
-if command -v netfilter-persistent &>/dev/null; then
-    netfilter-persistent save
-fi
-echo "✅ Firewall rules removed."
-
-# Step 4: Remove cron job
-echo "============================================"
-echo "Step 4: Removing scheduled updates"
-echo "============================================"
-
-if [ -f "$CRON_JOB" ]; then
-    echo "→ Removing cron job..."
-    rm -f "$CRON_JOB"
-    echo "✅ Cron job removed."
+if [[ $? -eq 0 ]]; then
+  echo "✅ Systemd daemon reloaded"
 else
-    echo "→ No cron job found to remove."
+  echo "❌ Failed to reload systemd daemon" >&2
 fi
 
-# Step 5: Remove USB and mounting restrictions
 echo "============================================"
-echo "Step 5: Removing USB and mounting restrictions"
+echo "Step 2: Remove Firewall Rules"
 echo "============================================"
 
-# Remove USB rules
-if [ -f "$USB_RULES" ]; then
-    echo "→ Removing USB restrictions..."
-    rm -f "$USB_RULES"
-    echo "✅ USB rules removed."
+echo "→ Removing iptables network restrictions..."
+
+# Configure user-specific chains
+CHAIN_IN="${CHAIN_PREFIX}_${RESTRICT_USER^^}_IN"
+CHAIN_OUT="${CHAIN_PREFIX}_${RESTRICT_USER^^}_OUT"
+
+echo "→ Removing user-specific firewall rules..."
+
+# Get the UID for the user
+USER_UID=$(id -u "$RESTRICT_USER" 2>/dev/null || echo "")
+
+if [[ -n "$USER_UID" ]]; then
+  # Remove user-specific jump rules from main chains
+  echo "→ Removing jump rules for user $RESTRICT_USER (UID: $USER_UID)"
+  iptables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+  iptables -D INPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_IN" 2>/dev/null || true
+  echo "✅ User-specific jump rules removed"
 else
-    echo "→ No USB rules found to remove."
+  echo "⚠️  Could not determine UID for user $RESTRICT_USER"
+fi
+
+# Flush and delete the custom chains
+echo "→ Removing custom iptables chains: $CHAIN_IN, $CHAIN_OUT"
+
+if iptables -L "$CHAIN_OUT" &>/dev/null; then
+  echo "→ Flushing chain: $CHAIN_OUT"
+  iptables -F "$CHAIN_OUT" 2>/dev/null || true
+  echo "→ Deleting chain: $CHAIN_OUT"
+  iptables -X "$CHAIN_OUT" 2>/dev/null || true
+  echo "✅ Output chain removed"
+else
+  echo "✅ Output chain was not present"
+fi
+
+if iptables -L "$CHAIN_IN" &>/dev/null; then
+  echo "→ Flushing chain: $CHAIN_IN"
+  iptables -F "$CHAIN_IN" 2>/dev/null || true
+  echo "→ Deleting chain: $CHAIN_IN"
+  iptables -X "$CHAIN_IN" 2>/dev/null || true
+  echo "✅ Input chain removed"
+else
+  echo "✅ Input chain was not present"
+fi
+
+echo "============================================"
+echo "Step 3: Remove USB Storage Restrictions"
+echo "============================================"
+
+echo "→ Removing USB storage device restrictions..."
+
+# Remove udev rules
+if [[ -f "/etc/udev/rules.d/99-contest-block-usb.rules" ]]; then
+  echo "→ Removing udev rules..."
+  rm -f "/etc/udev/rules.d/99-contest-block-usb.rules"
+  echo "✅ USB storage udev rules removed"
+else
+  echo "✅ USB storage udev rules were not present"
 fi
 
 # Remove polkit rules
-if [ -f "$POLKIT_RULES" ]; then
-    echo "→ Removing polkit mounting restrictions..."
-    rm -f "$POLKIT_RULES"
-    echo "✅ Polkit rules removed."
+if [[ -f "/etc/polkit-1/rules.d/99-contest-block-mount.rules" ]]; then
+  echo "→ Removing polkit rules..."
+  rm -f "/etc/polkit-1/rules.d/99-contest-block-mount.rules"
+  echo "✅ Polkit mount blocking rules removed"
 else
-    echo "→ No polkit rules found to remove."
+  echo "✅ Polkit mount blocking rules were not present"
 fi
 
-# Reload udev
+# Reload udev rules
 echo "→ Reloading udev rules..."
-udevadm control --reload-rules && udevadm trigger
-echo "✅ Udev rules reloaded."
+udevadm control --reload-rules
+udevadm trigger
 
-# Step 6: Clean up helper scripts and cache
-echo "============================================"
-echo "Step 6: Cleaning up helper scripts and cache"
-echo "============================================"
-
-# Only remove the helper script if no other restricted users exist
-if ! ls /etc/systemd/system/contest-restrict-*.service &>/dev/null; then
-    echo "→ No other restricted users found, removing helper script..."
-    rm -f "$UPDATE_SCRIPT"
-    rm -rf "$IP_CACHE_DIR"
-    echo "✅ Helper script and cache removed."
+if [[ $? -eq 0 ]]; then
+  echo "✅ USB storage restrictions removed successfully"
 else
-    echo "→ Other restricted users exist, keeping helper script."
+  echo "❌ Failed to reload udev rules" >&2
 fi
 
-# Step 7: Restore user groups for device access
 echo "============================================"
-echo "Step 7: Restoring user permissions"
+echo "Step 4: Clean Up Configuration Files"
 echo "============================================"
 
-echo "→ Adding $USER back to disk and plugdev groups..."
-usermod -a -G disk,plugdev "$USER" 2>/dev/null || true
-echo "✅ Group memberships restored."
+echo "→ Cleaning up user-specific configuration files..."
 
-# Final message
-echo "============================================"
-echo "✅ Internet restrictions successfully removed for user $USER!"
-echo "✅ USB storage restrictions removed for user $USER!"
-echo "✅ All network access should now be available."
-echo "============================================"
+# Remove user-specific cache files
+USER_DOMAIN_CACHE="$CONFIG_DIR/${RESTRICT_USER}_domains_cache.txt"
+USER_IP_CACHE="$CONFIG_DIR/${RESTRICT_USER}_ip_cache.txt"
+
+if [[ -f "$USER_DOMAIN_CACHE" ]]; then
+  echo "→ Removing domain cache: $USER_DOMAIN_CACHE"
+  rm -f "$USER_DOMAIN_CACHE"
+  echo "✅ Domain cache removed"
+fi
+
+if [[ -f "$USER_IP_CACHE" ]]; then
+  echo "→ Removing IP cache: $USER_IP_CACHE"
+  rm -f "$USER_IP_CACHE"
+  echo "✅ IP cache removed"
+fi
+
+# Ask user if they want to remove global configuration
 echo ""
-echo "To verify restrictions are removed:"
-echo "1. Log in as $USER"
-echo "2. Try to access any website"
-echo "3. Try to plug in a USB storage device"
+echo "→ Global configuration files:"
+echo "   • Whitelist: $WHITELIST_FILE"
+echo "   • Dependencies: $DEPENDENCIES_FILE"
+echo "   • Helper script: $HELPER_SCRIPT"
+
+read -p "Do you want to remove global configuration files? (y/N): " -n 1 -r
+echo ""
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+  echo "→ Removing global configuration files..."
+  
+  if [[ -f "$WHITELIST_FILE" ]]; then
+    rm -f "$WHITELIST_FILE"
+    echo "✅ Whitelist file removed"
+  fi
+  
+  if [[ -f "$DEPENDENCIES_FILE" ]]; then
+    rm -f "$DEPENDENCIES_FILE"
+    echo "✅ Dependencies file removed"
+  fi
+  
+  if [[ -f "$HELPER_SCRIPT" ]]; then
+    rm -f "$HELPER_SCRIPT"
+    echo "✅ Helper script removed"
+  fi
+  
+  # Remove config directory if empty
+  if [[ -d "$CONFIG_DIR" ]] && [[ -z "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ]]; then
+    rmdir "$CONFIG_DIR"
+    echo "✅ Configuration directory removed"
+  fi
+else
+  echo "✅ Global configuration files preserved"
+fi
+
+echo "============================================"
+echo "Step 5: Verify Removal"
+echo "============================================"
+
+echo "→ Verifying that all restrictions have been removed..."
+
+# Check for remaining iptables rules
+echo "→ Checking for remaining iptables rules..."
+if iptables -L | grep -q "$CHAIN_PREFIX.*$RESTRICT_USER" 2>/dev/null; then
+  echo "⚠️  Warning: Some iptables rules may still exist"
+else
+  echo "✅ No iptables rules found"
+fi
+
+# Check for remaining systemd services
+echo "→ Checking for remaining systemd services..."
+if systemctl list-units --all | grep -q "$CONTEST_SERVICE" 2>/dev/null; then
+  echo "⚠️  Warning: Some systemd services may still exist"
+else
+  echo "✅ No systemd services found"
+fi
+
+# Check for remaining udev/polkit rules
+echo "→ Checking for remaining USB restrictions..."
+remaining_rules=0
+
+if [[ -f "/etc/udev/rules.d/99-contest-block-usb.rules" ]]; then
+  echo "⚠️  Warning: USB udev rules still exist"
+  remaining_rules=1
+fi
+
+if [[ -f "/etc/polkit-1/rules.d/99-contest-block-mount.rules" ]]; then
+  echo "⚠️  Warning: Polkit mount rules still exist"
+  remaining_rules=1
+fi
+
+if [[ $remaining_rules -eq 0 ]]; then
+  echo "✅ No USB restrictions found"
+fi
+
+echo "============================================"
+echo "✅ Contest Environment Unrestriction Complete!"
+echo "============================================"
+
+echo "Summary:"
+echo "→ User: '$RESTRICT_USER'"
+echo "→ Internet access: Fully restored (no restrictions)"
+echo "→ USB storage devices: Fully accessible"
+echo "→ Firewall rules: Removed"
+echo "→ Background services: Stopped and disabled"
+echo "→ Completed at: $(date)"
+
+echo ""
+echo "💡 Next steps:"
+echo "   • User '$RESTRICT_USER' now has full internet access"
+echo "   • USB storage devices can be used normally"
+echo "   • To re-apply restrictions, run: sudo cmanager restrict $RESTRICT_USER"
+echo "   • To check current status, run: sudo cmanager status $RESTRICT_USER"
+
 echo "============================================"

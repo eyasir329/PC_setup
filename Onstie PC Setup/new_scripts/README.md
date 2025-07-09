@@ -60,7 +60,11 @@ sudo cmanager unrestrict participant
 | `reset [USER]` | Reset user account to clean state | `sudo cmanager reset participant` |
 | `restrict [USER]` | Enable internet restrictions for user | `sudo cmanager restrict participant` |
 | `unrestrict [USER]` | Remove all restrictions for user | `sudo cmanager unrestrict participant` |
+| `discover` | Discover external dependencies for whitelisted contest sites | `sudo cmanager discover` |
 | `status [USER]` | Show restriction status | `sudo cmanager status participant` |
+| `list` | List currently whitelisted domains | `sudo cmanager list` |
+| `add DOMAIN` | Add domain to whitelist | `sudo cmanager add codeforces.com` |
+| `remove DOMAIN` | Remove domain from whitelist | `sudo cmanager remove facebook.com` |
 | `help` | Show help message | `sudo cmanager help` |
 
 ## Whitelist Management
@@ -72,14 +76,14 @@ The system uses simple text files for domain management:
 | File | Location | Description |
 |------|----------|-------------|
 | `whitelist.txt` | Current directory | Local whitelist file for testing |
-| `allowed.txt` | `/usr/local/etc/contest-restriction/` | System-wide whitelist file |
+| `whitelist.txt` | `/usr/local/etc/contest-restriction/` | System-wide whitelist file |
 
 ### Workflow
 
 1. **Edit the whitelist file** directly with allowed domains:
    ```bash
    # Edit system whitelist
-   sudo nano /usr/local/etc/contest-restriction/allowed.txt
+   sudo nano /usr/local/etc/contest-restriction/whitelist.txt
    
    # Or edit local whitelist for testing
    nano whitelist.txt
@@ -92,7 +96,12 @@ The system uses simple text files for domain management:
    codechef.com
    ```
 
-3. **Apply changes** by running the restrict command:
+3. **Discover dependencies** (recommended before restricting):
+   ```bash
+   sudo cmanager discover
+   ```
+
+4. **Apply restrictions** by running the restrict command:
    ```bash
    sudo cmanager restrict participant
    ```
@@ -104,6 +113,74 @@ atcoder.jp
 codechef.com
 leetcode.com
 ```
+
+## Workflow
+
+### Complete Setup Process
+
+1. **Install the system**:
+   ```bash
+   sudo bash install.sh
+   ```
+
+2. **Set up a user account**:
+   ```bash
+   sudo cmanager setup participant
+   ```
+
+3. **Configure whitelist** with contest platforms:
+   ```bash
+   nano whitelist.txt
+   # Add contest sites like codeforces.com, codechef.com, etc.
+   ```
+
+4. **Discover external dependencies** (important step):
+   ```bash
+   sudo cmanager discover
+   ```
+   This analyzes each contest site and finds essential external resources (CDNs, APIs, fonts) while filtering out forbidden sites like Google, GitHub, etc.
+
+5. **Apply restrictions**:
+   ```bash
+   sudo cmanager restrict participant
+   ```
+
+6. **Verify status**:
+   ```bash
+   sudo cmanager status participant
+   ```
+
+### Dependency Discovery
+
+The system includes an advanced dependency discovery feature that:
+- **Simulates browser visits** to each contest platform
+- **Captures DNS queries** to find external resources
+- **Filters out forbidden domains** (google.com, github.com, stackoverflow.com, etc.)
+- **Keeps only essential technical dependencies** (CDNs, APIs, fonts, static assets)
+- **Provides double-layer filtering** for security
+
+This ensures contest sites work properly while maintaining strict security.
+
+### Removing Restrictions
+
+When the contest is over, you can completely remove all restrictions:
+
+```bash
+# Remove all restrictions for a user
+sudo cmanager unrestrict participant
+```
+
+The unrestrict process:
+- **Stops and removes** all systemd services and timers
+- **Removes all iptables rules** and custom chains for the user
+- **Restores USB storage access** by removing udev and polkit rules
+- **Cleans up configuration files** (with user confirmation for global files)
+- **Verifies complete removal** of all restrictions
+
+After unrestricting, the user will have:
+- ✅ **Full internet access** (no domain restrictions)
+- ✅ **Complete USB storage access** (pendrives, SSDs, etc.)
+- ✅ **Normal system behavior** (as if restrictions were never applied)
 
 ## How It Works
 
@@ -140,7 +217,7 @@ leetcode.com
 
 ### File Locations
 - Scripts: `/usr/local/share/contest-manager/`
-- Whitelist: `/usr/local/etc/contest-restriction/allowed.txt`
+- Whitelist: `/usr/local/etc/contest-restriction/whitelist.txt`
 - User backups: `/opt/{username}_backup/`
 - Helper scripts: `/usr/local/bin/whitelist-manager.sh`, `/usr/local/bin/update-contest-whitelist`
 
@@ -198,6 +275,8 @@ sudo cmanager update
 2. **Permission denied**: Run commands with `sudo`
 3. **User doesn't exist**: Create user first or specify existing user
 4. **Services not starting**: Check system logs with `journalctl`
+5. **Restrictions not removed**: Run unrestrict command and check verification output
+6. **USB still blocked**: Reboot system after unrestricting to ensure udev rules are fully reloaded
 
 ### Debug Commands
 ```bash
@@ -212,6 +291,12 @@ sudo update-contest-whitelist participant
 
 # Test domain resolution
 dig codeforces.com
+
+# Check for remaining restrictions after unrestricting
+sudo iptables -L | grep CONTEST
+sudo systemctl list-units --all | grep contest-restrict
+ls -la /etc/udev/rules.d/99-contest-*
+ls -la /etc/polkit-1/rules.d/99-contest-*
 ```
 
 ## Contributing

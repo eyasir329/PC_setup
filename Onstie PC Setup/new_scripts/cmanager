@@ -8,6 +8,7 @@ RESTRICT_SCRIPT="$SCRIPT_DIR/restrict.sh"
 UNRESTRICT_SCRIPT="$SCRIPT_DIR/unrestrict.sh"
 SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
 RESET_SCRIPT="$SCRIPT_DIR/reset.sh"
+DISCOVER_SCRIPT="$SCRIPT_DIR/discover-dependencies.sh"
 
 # Check if running as root
 check_root() {
@@ -29,6 +30,8 @@ Commands:
   reset [USER]        Reset user account to clean state (default: participant)
   restrict [USER]     Enable internet restrictions for specified user (default: participant)
   unrestrict [USER]   Disable internet restrictions for specified user
+  discover            Discover external dependencies for whitelisted contest sites
+  dependencies        Show discovered external dependencies for contest sites
   status [USER]       Show current restriction status for specified user
   list                List currently whitelisted domains
   add DOMAIN          Add domain to whitelist
@@ -42,6 +45,8 @@ Examples:
   sudo cmanager reset contestant        # Reset contestant account
   sudo cmanager restrict                # Restrict default user (participant)
   sudo cmanager restrict contestant     # Restrict user "contestant"
+  sudo cmanager discover                # Discover dependencies for contest sites
+  sudo cmanager dependencies            # Show discovered dependencies
   sudo cmanager status                  # Check status for participant
   sudo cmanager list                    # List whitelisted domains
   sudo cmanager add codeforces.com      # Add domain to whitelist
@@ -51,7 +56,7 @@ EOF
 }
 
 # Configuration
-WHITELIST_CONFIG="/usr/local/etc/contest-restriction/allowed.txt"
+WHITELIST_CONFIG="/usr/local/etc/contest-restriction/whitelist.txt"
 
 # Check status of user restrictions
 check_status() {
@@ -160,6 +165,29 @@ remove_domain() {
   fi
 }
 
+# Display discovered dependencies
+show_dependencies() {
+  local dependencies_file="/usr/local/etc/contest-restriction/dependencies.txt"
+  
+  if [ -f "$dependencies_file" ]; then
+    echo "Discovered dependencies for contest sites:"
+    
+    # Count domains
+    local count=$(grep -c -v "^[[:space:]]*#\|^[[:space:]]*$" "$dependencies_file" 2>/dev/null || echo "0")
+    
+    if [ "$count" -gt 0 ]; then
+      # Display domains with numbers
+      echo "Found $count external dependencies:"
+      grep -v "^[[:space:]]*#\|^[[:space:]]*$" "$dependencies_file" | sort | awk '{print "  " NR ". " $0}'
+    else
+      echo "No dependencies found. Run 'sudo cmanager discover' to discover dependencies."
+    fi
+  else
+    echo "No dependencies file found at $dependencies_file"
+    echo "Run 'sudo cmanager discover' to discover dependencies."
+  fi
+}
+
 # Main script logic
 main() {
   if [ $# -lt 1 ]; then
@@ -187,6 +215,13 @@ main() {
       check_root
       user="${2:-$DEFAULT_USER}"
       RESTRICT_USER="$user" bash "$UNRESTRICT_SCRIPT"
+      ;;
+    discover)
+      check_root
+      bash "$DISCOVER_SCRIPT"
+      ;;
+    dependencies)
+      show_dependencies
       ;;
     status)
       user="${2:-$DEFAULT_USER}"

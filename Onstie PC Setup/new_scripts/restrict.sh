@@ -1,412 +1,645 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Use RESTRICT_USER if set, otherwise default to "participant"
-USER="${RESTRICT_USER:-${1:-participant}}"
+# Contest Environment Restriction Script
+# This script restricts internet access and USB storage for contest participants
+# allowing only specified domains in the whitelist
 
 # Configuration
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-WHITELIST_FILE="$SCRIPT_DIR/whitelist.txt"
-SYSTEM_WHITELIST="/usr/local/etc/contest-restriction/allowed.txt"
-IP_CACHE_DIR="/var/cache/contest-restriction"
-IP_CACHE_FILE="$IP_CACHE_DIR/resolved-ips.txt"
-UPDATE_SCRIPT="/usr/local/bin/update-contest-whitelist"
-SYSTEMD_SERVICE="contest-restrict-$USER.service"
-CRON_JOB="/etc/cron.d/contest-whitelist-updater"
-USB_RULES="/etc/udev/rules.d/99-contest-usb-block.rules"
-POLKIT_RULES="/etc/polkit-1/rules.d/99-contest-block-mount.rules"
+DEFAULT_USER="participant"
+RESTRICT_USER="${1:-$DEFAULT_USER}"
+CONFIG_DIR="/usr/local/etc/contest-restriction"
+WHITELIST_FILE="$CONFIG_DIR/whitelist.txt"
+DEPENDENCIES_FILE="$CONFIG_DIR/dependencies.txt"
+LOCAL_WHITELIST="whitelist.txt"
+SCRIPT_DIR="/usr/local/share/contest-manager"
+HELPER_SCRIPT="/usr/local/bin/update-contest-whitelist"
+CHAIN_PREFIX="CONTEST"
+CONTEST_SERVICE="contest-restrict-$RESTRICT_USER"
 
 echo "============================================"
-echo "Starting Internet Restriction Setup for user '$USER': $(date)"
+echo "Contest Environment Restriction - User: '$RESTRICT_USER'"
+echo "Starting at: $(date)"
 echo "============================================"
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
-    echo "❌ This script must be run as root." >&2
-    exit 1
+  echo "❌ Error: This script must be run as root"
+  exit 1
 fi
 
-# Step 1: Set up directory structure
+# Ensure the user exists
+if ! id "$RESTRICT_USER" &>/dev/null; then
+  echo "❌ Error: User '$RESTRICT_USER' does not exist"
+  exit 1
+fi
+
 echo "============================================"
-echo "Step 1: Setting up directory structure"
+echo "Step 1: Initialize Configuration"
 echo "============================================"
 
-# Create necessary directories
-echo "→ Creating configuration directories..."
-mkdir -p "$(dirname "$SYSTEM_WHITELIST")"
-mkdir -p "$IP_CACHE_DIR"
-
-# Handle whitelist file
-if [ -f "$WHITELIST_FILE" ]; then
-    # Local whitelist.txt exists - copy it to system location
-    echo "→ Copying local whitelist.txt to system location..."
-    cp "$WHITELIST_FILE" "$SYSTEM_WHITELIST"
-    echo "✅ Local whitelist copied successfully."
-elif [ -f "$SYSTEM_WHITELIST" ]; then
-    # System whitelist already exists
-    echo "→ Using existing system whitelist at $SYSTEM_WHITELIST"
-    echo "✅ System whitelist found."
+# Create configuration directory
+echo "→ Creating configuration directory..."
+mkdir -p "$CONFIG_DIR"
+if [[ $? -eq 0 ]]; then
+  echo "✅ Configuration directory created: $CONFIG_DIR"
 else
-    # Neither whitelist exists - create a default one
-    echo "→ No whitelist found. Creating a default whitelist..."
-    cat > "$SYSTEM_WHITELIST" << EOF
-# Default contest platforms whitelist
-# Add more domains as needed using: sudo cmanager add domain.com
-codeforces.com
-codechef.com
-vjudge.net
-atcoder.jp
-hackerrank.com
-hackerearth.com
-topcoder.com
-spoj.com
-lightoj.com
-onlinejudge.org
-uva.onlinejudge.org
-cses.fi
-EOF
-    echo "✅ Default whitelist created successfully."
+  echo "❌ Failed to create configuration directory" >&2
+  exit 1
 fi
 
-# Step 2: Create IP resolution script
-echo "============================================"
-echo "Step 2: Creating IP resolution helper script"
-echo "============================================"
-
-echo "→ Creating whitelist update script..."
-cat > "$UPDATE_SCRIPT" << 'EOF'
-#!/bin/bash
-
-# Configuration
-WHITELIST="/usr/local/etc/contest-restriction/allowed.txt"
-IP_CACHE_DIR="/var/cache/contest-restriction"
-IP_CACHE_FILE="$IP_CACHE_DIR/resolved-ips.txt"
-TEMP_IP_FILE="$IP_CACHE_DIR/temp-ips.txt"
-LOG_FILE="/var/log/contest-restriction.log"
-
-# Ensure directory exists
-mkdir -p "$IP_CACHE_DIR"
-
-# Function to log messages
-log_message() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-    echo "$1"
-}
-
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-    log_message "This script must be run as root."
-    exit 1
-fi
-
-# Check if whitelist exists
-if [ ! -f "$WHITELIST" ]; then
-    log_message "Whitelist file not found at $WHITELIST"
-    exit 1
-fi
-
-log_message "Starting IP resolution process..."
-
-# Clear temporary file
-> "$TEMP_IP_FILE"
-
-# Read whitelist and resolve IPs
-while read -r domain || [ -n "$domain" ]; do
-    # Skip comments and empty lines
-    [[ "$domain" =~ ^#.*$ ]] && continue
-    [[ -z "$domain" ]] && continue
-    
-    log_message "Resolving IPs for domain: $domain"
-    
-    # Resolve IPv4 addresses
-    ipv4s=$(dig +short A "$domain" 2>/dev/null)
-    if [ -n "$ipv4s" ]; then
-        for ip in $ipv4s; do
-            echo "IPv4 $domain $ip" >> "$TEMP_IP_FILE"
-        done
-    fi
-    
-    # Resolve www subdomain if it exists
-    ipv4s=$(dig +short A "www.$domain" 2>/dev/null)
-    if [ -n "$ipv4s" ]; then
-        for ip in $ipv4s; do
-            echo "IPv4 www.$domain $ip" >> "$TEMP_IP_FILE"
-        done
-    fi
-    
-    # Resolve common subdomains
-    for subdomain in api cdn static assets; do
-        ipv4s=$(dig +short A "$subdomain.$domain" 2>/dev/null)
-        if [ -n "$ipv4s" ]; then
-            for ip in $ipv4s; do
-                echo "IPv4 $subdomain.$domain $ip" >> "$TEMP_IP_FILE"
-            done
-        fi
-    done
-    
-    # Resolve IPv6 addresses
-    ipv6s=$(dig +short AAAA "$domain" 2>/dev/null)
-    if [ -n "$ipv6s" ]; then
-        for ip in $ipv6s; do
-            echo "IPv6 $domain $ip" >> "$TEMP_IP_FILE"
-        done
-    fi
-    
-    # Sleep briefly to avoid overwhelming DNS servers
-    sleep 0.5
-done < "$WHITELIST"
-
-# Check if we resolved any IPs
-if [ ! -s "$TEMP_IP_FILE" ]; then
-    log_message "Warning: No IP addresses were resolved. Check network connectivity."
-    exit 1
-fi
-
-# Update the main IP cache file
-mv "$TEMP_IP_FILE" "$IP_CACHE_FILE"
-chmod 644 "$IP_CACHE_FILE"
-
-# Update iptables rules for all restricted users
-for service in /etc/systemd/system/contest-restrict-*.service; do
-    if [ -f "$service" ]; then
-        username=$(basename "$service" | cut -d'-' -f3 | cut -d'.' -f1)
-        log_message "Updating iptables rules for user: $username"
-        
-        # Extract user ID
-        user_id=$(id -u "$username" 2>/dev/null)
-        if [ -z "$user_id" ]; then
-            log_message "Warning: User $username not found, skipping."
-            continue
-        fi
-        
-        # Flush existing rules for user
-        iptables -D OUTPUT -m owner --uid-owner "$user_id" -j "CONTEST_${username^^}_OUT" 2>/dev/null || true
-        iptables -F "CONTEST_${username^^}_OUT" 2>/dev/null || true
-        iptables -X "CONTEST_${username^^}_OUT" 2>/dev/null || true
-        
-        # Create new chain
-        iptables -N "CONTEST_${username^^}_OUT"
-        
-        # Allow established connections
-        iptables -A "CONTEST_${username^^}_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        
-        # Allow DNS (needed to resolve domains)
-        iptables -A "CONTEST_${username^^}_OUT" -p udp --dport 53 -j ACCEPT
-        iptables -A "CONTEST_${username^^}_OUT" -p tcp --dport 53 -j ACCEPT
-        
-        # Allow loopback
-        iptables -A "CONTEST_${username^^}_OUT" -o lo -j ACCEPT
-        
-        # Allow access to whitelisted IPs
-        while read -r line; do
-            ip_type=$(echo "$line" | awk '{print $1}')
-            domain=$(echo "$line" | awk '{print $2}')
-            ip=$(echo "$line" | awk '{print $3}')
-            
-            if [ "$ip_type" = "IPv4" ]; then
-                iptables -A "CONTEST_${username^^}_OUT" -d "$ip" -j ACCEPT
-            elif [ "$ip_type" = "IPv6" ]; then
-                ip6tables -A "CONTEST_${username^^}_OUT" -d "$ip" -j ACCEPT 2>/dev/null || true
-            fi
-        done < "$IP_CACHE_FILE"
-        
-        # Default deny
-        iptables -A "CONTEST_${username^^}_OUT" -j REJECT
-        ip6tables -A "CONTEST_${username^^}_OUT" -j REJECT 2>/dev/null || true
-        
-        # Apply the chain to the user's traffic
-        iptables -A OUTPUT -m owner --uid-owner "$user_id" -j "CONTEST_${username^^}_OUT"
-        ip6tables -A OUTPUT -m owner --uid-owner "$user_id" -j "CONTEST_${username^^}_OUT" 2>/dev/null || true
-    fi
-done
-
-log_message "IP resolution and firewall update completed successfully."
-exit 0
-EOF
-
-# Make the script executable
-chmod +x "$UPDATE_SCRIPT"
-echo "✅ Update script created successfully."
-
-# Step 3: Set up iptables rules
-echo "============================================"
-echo "Step 3: Setting up iptables rules"
-echo "============================================"
-
-echo "→ Installing required packages..."
-apt-get update
-apt-get install -y iptables iptables-persistent dnsutils udev
-
-# Get the user's UID
-USER_ID=$(id -u "$USER" 2>/dev/null)
-if [ -z "$USER_ID" ]; then
-    echo "❌ Error: User $USER does not exist!" >&2
-    exit 1
-fi
-
-echo "→ Configuring iptables for user $USER (UID: $USER_ID)..."
-
-# Create a custom chain for the user
-iptables -F "CONTEST_${USER^^}_OUT" 2>/dev/null || true
-iptables -X "CONTEST_${USER^^}_OUT" 2>/dev/null || true
-iptables -N "CONTEST_${USER^^}_OUT"
-
-# Set default policy: drop all outgoing traffic for the user
-iptables -A "CONTEST_${USER^^}_OUT" -j REJECT
-
-# Add the user's traffic to the custom chain
-iptables -D OUTPUT -m owner --uid-owner "$USER_ID" -j "CONTEST_${USER^^}_OUT" 2>/dev/null || true
-iptables -A OUTPUT -m owner --uid-owner "$USER_ID" -j "CONTEST_${USER^^}_OUT"
-
-# Save iptables rules
-if command -v netfilter-persistent &>/dev/null; then
-    netfilter-persistent save
+# Check for whitelist file
+echo "→ Setting up whitelist configuration..."
+if [[ ! -f "$WHITELIST_FILE" && -f "$LOCAL_WHITELIST" ]]; then
+  echo "→ Creating system whitelist from local whitelist.txt..."
+  cp "$LOCAL_WHITELIST" "$WHITELIST_FILE"
+  echo "✅ System whitelist created from local file"
+elif [[ ! -f "$WHITELIST_FILE" && ! -f "$LOCAL_WHITELIST" ]]; then
+  echo "❌ Error: No whitelist found. Please create whitelist.txt or $WHITELIST_FILE"
+  exit 1
 else
-    echo "→ netfilter-persistent not found, installing..."
-    apt-get install -y iptables-persistent
-    netfilter-persistent save
+  echo "✅ Whitelist configuration found"
 fi
 
-echo "✅ Base iptables configuration completed."
-
-# Step 4: Create the systemd service for update script
-echo "============================================"
-echo "Step 4: Setting up systemd service"
-echo "============================================"
-
-echo "→ Creating systemd service..."
-cat > "/etc/systemd/system/$SYSTEMD_SERVICE" << EOF
-[Unit]
-Description=Internet restrictions for user $USER
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=$UPDATE_SCRIPT
-RemainAfterExit=true
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start the service
-systemctl daemon-reload
-systemctl enable "$SYSTEMD_SERVICE"
-systemctl start "$SYSTEMD_SERVICE"
-
-if systemctl is-active "$SYSTEMD_SERVICE" &>/dev/null; then
-    echo "✅ Systemd service started successfully."
+# Check for dependency discovery results
+echo "→ Checking for discovered dependencies..."
+if [[ ! -f "$DEPENDENCIES_FILE" ]]; then
+  echo "⚠️  Warning: No discovered dependencies found. Consider running discover-dependencies.sh first."
+  echo "→ Proceeding with static dependencies only."
 else
-    echo "❌ Failed to start systemd service." >&2
-    exit 1
+  echo "✅ Discovered dependencies found"
 fi
 
-# Step 5: Set up cron job for regular updates
 echo "============================================"
-echo "Step 5: Setting up scheduled updates"
-echo "============================================"
-
-echo "→ Creating cron job for IP updates..."
-cat > "$CRON_JOB" << EOF
-# Update whitelisted IP addresses every 15 minutes
-*/15 * * * * root $UPDATE_SCRIPT >/dev/null 2>&1
-EOF
-
-chmod 644 "$CRON_JOB"
-echo "✅ Cron job created successfully."
-
-# Step 6: Block USB storage devices
-echo "============================================"
-echo "Step 6: Blocking USB storage devices"
+echo "Step 2: Configure USB Storage Restrictions"
 echo "============================================"
 
-echo "→ Creating udev rules to block USB storage..."
-cat > "$USB_RULES" << 'EOF'
-# Block USB storage devices
-ACTION=="add", SUBSYSTEMS=="usb", SUBSYSTEM=="block", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}!="046d", ATTR{idProduct}!="c52b", ENV{ID_USB_DRIVER}=="usb-storage", RUN+="/bin/sh -c 'echo 0 > /sys/$DEVPATH/authorized'"
+echo "→ Setting up USB storage device blocking..."
 
-# Allow USB hub, keyboard, mouse, etc.
-SUBSYSTEM=="usb", ATTRS{bInterfaceClass}=="03", TAG+="contest_allowed_usb"
-SUBSYSTEM=="usb", ATTRS{bInterfaceClass}=="09", TAG+="contest_allowed_usb"
-SUBSYSTEM=="usb", ATTRS{bInterfaceClass}=="01", ATTRS{bInterfaceSubClass}=="01", TAG-="contest_allowed_usb"
-EOF
+# Create udev rules to block USB storage
+echo "→ Creating udev rules for USB storage blocking..."
+cat > /etc/udev/rules.d/99-contest-block-usb.rules << EOL
+# Contest Environment Manager: Block USB storage for $RESTRICT_USER
+ACTION=="add", SUBSYSTEMS=="usb", ATTRS{bInterfaceClass}=="08", ENV{ID_USB_INTERFACE_NUM}=="*", TAG+="uaccess", TAG+="udev-acl", OWNER="root", GROUP="root"
+EOL
 
-chmod 644 "$USB_RULES"
-echo "✅ USB blocking rules created."
+if [[ $? -eq 0 ]]; then
+  echo "✅ USB storage udev rules created"
+else
+  echo "❌ Failed to create USB storage udev rules" >&2
+  exit 1
+fi
 
-# Step 7: Block mounting of external devices via polkit
-echo "============================================"
-echo "Step 7: Blocking device mounting"
-echo "============================================"
-
+# Create polkit rules to prevent mounting
 echo "→ Creating polkit rules to prevent mounting..."
-cat > "$POLKIT_RULES" << EOF
+cat > /etc/polkit-1/rules.d/99-contest-block-mount.rules << EOL
+// Contest Environment Manager: Block mounting for $RESTRICT_USER
 polkit.addRule(function(action, subject) {
-    if ((action.id == "org.freedesktop.udisks2.filesystem-mount" ||
-         action.id == "org.freedesktop.udisks2.filesystem-mount-system" ||
-         action.id == "org.freedesktop.udisks2.encrypted-unlock" ||
-         action.id == "org.freedesktop.udisks2.eject-media") &&
-        subject.user == "$USER") {
+    if ((action.id.indexOf("org.freedesktop.udisks2.") == 0 ||
+         action.id.indexOf("org.freedesktop.UDisks2.") == 0) &&
+        subject.user == "$RESTRICT_USER") {
         return polkit.Result.NO;
     }
 });
-EOF
+EOL
 
-chmod 644 "$POLKIT_RULES"
-echo "✅ Polkit rules created."
-
-# Step 8: Reload rules and services
-echo "============================================"
-echo "Step 8: Applying all rules"
-echo "============================================"
-
-# Run the update script to resolve IPs and apply iptables rules
-echo "→ Running initial IP resolution and applying rules..."
-"$UPDATE_SCRIPT"
+if [[ $? -eq 0 ]]; then
+  echo "✅ Polkit mount blocking rules created"
+else
+  echo "❌ Failed to create polkit rules" >&2
+  exit 1
+fi
 
 # Reload udev rules
 echo "→ Reloading udev rules..."
 udevadm control --reload-rules
 udevadm trigger
 
-echo "✅ All rules applied successfully."
-
-# Step 9: Apply the rules immediately
-echo "============================================"
-echo "Step 9: Testing configuration"
-echo "============================================"
-
-echo "→ Testing internet restrictions..."
-sudo -u "$USER" curl -s --connect-timeout 5 google.com >/dev/null
-if [ $? -ne 0 ]; then
-    echo "✅ General internet access is blocked for $USER."
+if [[ $? -eq 0 ]]; then
+  echo "✅ USB storage restrictions applied successfully"
 else
-    echo "❌ Warning: General internet access is still available for $USER."
+  echo "❌ Failed to reload udev rules" >&2
+  exit 1
 fi
 
-# Test allowed domains
-for domain in $(grep -v "^#" "$SYSTEM_WHITELIST" | grep -v "^$"); do
-    echo "→ Testing access to $domain..."
-    sudo -u "$USER" curl -s --connect-timeout 5 "https://$domain" >/dev/null
-    if [ $? -eq 0 ]; then
-        echo "✅ Access to $domain is allowed."
+echo "============================================"
+echo "Step 3: Create Network Restriction Helper Script"
+echo "============================================"
+
+echo "→ Creating IP whitelist update script..."
+
+cat > "$HELPER_SCRIPT" << 'EOL'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration
+DEFAULT_USER="participant"
+USER="${1:-$DEFAULT_USER}"
+CONFIG_DIR="/usr/local/etc/contest-restriction"
+WHITELIST_FILE="$CONFIG_DIR/whitelist.txt"
+DEPENDENCIES_FILE="$CONFIG_DIR/dependencies.txt"
+CHAIN_IN="CONTEST_${USER^^}_IN"
+CHAIN_OUT="CONTEST_${USER^^}_OUT"
+DOMAIN_CACHE_FILE="$CONFIG_DIR/${USER}_domains_cache.txt"
+IP_CACHE_FILE="$CONFIG_DIR/${USER}_ip_cache.txt"
+
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+  echo "Error: This script must be run as root"
+  exit 1
+fi
+
+# Ensure fresh start by checking and recreating chains if needed
+echo "Ensuring iptables chains are properly set up..."
+
+# For IPv4
+if iptables -L "$CHAIN_IN" &>/dev/null; then
+  iptables -F "$CHAIN_IN"
+else
+  iptables -N "$CHAIN_IN"
+fi
+
+if iptables -L "$CHAIN_OUT" &>/dev/null; then
+  iptables -F "$CHAIN_OUT"
+else
+  iptables -N "$CHAIN_OUT"
+fi
+
+# For IPv6
+if ip6tables -L "$CHAIN_IN" &>/dev/null 2>/dev/null; then
+  ip6tables -F "$CHAIN_IN" 2>/dev/null || true
+else
+  ip6tables -N "$CHAIN_IN" 2>/dev/null || true
+fi
+
+if ip6tables -L "$CHAIN_OUT" &>/dev/null 2>/dev/null; then
+  ip6tables -F "$CHAIN_OUT" 2>/dev/null || true
+else
+  ip6tables -N "$CHAIN_OUT" 2>/dev/null || true
+fi
+
+# Set default policies
+# IPv4
+iptables -A "$CHAIN_OUT" -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A "$CHAIN_OUT" -d 127.0.0.0/8 -j ACCEPT
+iptables -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT  # Allow DNS
+iptables -A "$CHAIN_OUT" -j REJECT
+
+# IPv6
+ip6tables -A "$CHAIN_OUT" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+ip6tables -A "$CHAIN_OUT" -d ::1/128 -j ACCEPT 2>/dev/null || true
+ip6tables -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT 2>/dev/null || true  # Allow DNS
+ip6tables -A "$CHAIN_OUT" -j REJECT 2>/dev/null || true
+
+# Ensure required tools are installed
+missing_tools=()
+if ! command -v "iptables" &>/dev/null; then
+  missing_tools+=("iptables")
+fi
+if ! command -v "ip6tables" &>/dev/null; then
+  missing_tools+=("iptables")  # ip6tables is part of iptables package
+fi
+if ! command -v "dig" &>/dev/null || ! command -v "host" &>/dev/null; then
+  missing_tools+=("dnsutils")
+fi
+
+if [[ ${#missing_tools[@]} -gt 0 ]]; then
+  echo "Installing required tools: ${missing_tools[*]}"
+  apt-get update -qq
+  apt-get install -y "${missing_tools[@]}"
+  echo "Tools installed successfully"
+fi
+
+# Functions to resolve domains (faster version)
+resolve_domain() {
+  local domain="$1"
+  
+  # Use dig with timeout and simplified output
+  dig +short +time=2 +tries=1 "$domain" A "$domain" AAAA 2>/dev/null | grep -E '^[0-9]+\.|^[0-9a-f]*:' || true
+  
+  # Try common subdomains for contest platforms - extremely important for functionality
+  for subdomain in "www.$domain" "cdn.$domain" "static.$domain" "api.$domain" "assets.$domain"; do
+    dig +short +time=2 +tries=1 "$subdomain" A "$subdomain" AAAA 2>/dev/null | grep -E '^[0-9]+\.|^[0-9a-f]*:' || true
+  done
+}
+
+# Check if chains exist, create them if not
+ensure_chains() {
+  # IPv4 chains
+  if ! iptables -L "$CHAIN_IN" &>/dev/null; then
+    iptables -N "$CHAIN_IN" || true
+  fi
+  
+  if ! iptables -L "$CHAIN_OUT" &>/dev/null; then
+    iptables -N "$CHAIN_OUT" || true
+  fi
+  
+  # IPv6 chains
+  if ! ip6tables -L "$CHAIN_IN" &>/dev/null; then
+    ip6tables -N "$CHAIN_IN" || true
+  fi
+  
+  if ! ip6tables -L "$CHAIN_OUT" &>/dev/null; then
+    ip6tables -N "$CHAIN_OUT" || true
+  fi
+}
+
+# Clear existing IP rules but preserve the chain structure
+clear_chain() {
+  local chain="$1"
+  # Flush both IPv4 and IPv6 chains but don't delete them
+  iptables -F "$chain" 2>/dev/null || true
+  ip6tables -F "$chain" 2>/dev/null || true
+}
+
+# Batch add IPs to reduce iptables calls
+add_ips_to_chain() {
+  local chain="$1"
+  local ip_list="$2"
+  
+  # Process IPv4 and IPv6 addresses separately for efficiency
+  local ipv4_list=$(echo "$ip_list" | grep -E '^[0-9]+\.' | head -20 || true)  # Limit to 20 IPs per domain
+  local ipv6_list=$(echo "$ip_list" | grep -E '^[0-9a-f]*:' | head -20 || true)
+  
+  # Add IPv4 addresses
+  for ip in $ipv4_list; do
+    iptables -A "$chain" -d "$ip" -j ACCEPT 2>/dev/null || true
+  done
+  
+  # Add IPv6 addresses
+  for ip in $ipv6_list; do
+    ip6tables -A "$chain" -d "$ip" -j ACCEPT 2>/dev/null || true
+  done
+}
+
+# Check if whitelist file exists
+if [[ ! -f "$WHITELIST_FILE" ]]; then
+  echo "Error: Whitelist file not found at $WHITELIST_FILE"
+  exit 1
+fi
+
+# Ensure the chains exist
+ensure_chains
+
+# Clear existing IP rules
+clear_chain "$CHAIN_OUT"
+
+# Set default policies for IPv4
+iptables -A "$CHAIN_OUT" -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A "$CHAIN_OUT" -d 127.0.0.0/8 -j ACCEPT
+iptables -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT  # Allow DNS
+
+# Set default policies for IPv6
+ip6tables -A "$CHAIN_OUT" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+ip6tables -A "$CHAIN_OUT" -d ::1/128 -j ACCEPT 2>/dev/null || true
+ip6tables -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT 2>/dev/null || true  # Allow DNS
+
+# Track processed domains to avoid duplicates
+> "$DOMAIN_CACHE_FILE"
+> "$IP_CACHE_FILE"
+
+# Process whitelist
+echo "Updating whitelist IPs for user '$USER'..."
+
+# Collect all domains first
+all_domains=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  # Skip comments and empty lines
+  [[ "$line" =~ ^[[:space:]]*# ]] && continue
+  [[ -z "${line// }" ]] && continue
+  
+  # Clean up domain name
+  domain="${line#.}"
+  domain="${domain#http://}"
+  domain="${domain#https://}"
+  domain="${domain%%/*}"
+  
+  all_domains+=("$domain")
+done < "$WHITELIST_FILE"
+
+# Process all domains efficiently
+> "$DOMAIN_CACHE_FILE"
+> "$IP_CACHE_FILE"
+all_ips=""
+
+echo "Processing ${#all_domains[@]} whitelist domains..."
+for domain in "${all_domains[@]}"; do
+  echo "  → $domain"
+  echo "$domain" >> "$DOMAIN_CACHE_FILE"
+  
+  # Get IPs for main domain and common subdomains
+  for subdomain_prefix in "" "www." "api." "cdn."; do
+    if [[ -n "$subdomain_prefix" ]]; then
+      target_domain="${subdomain_prefix}${domain}"
     else
-        echo "⚠️ Access to $domain might be restricted. This could be due to IP resolution delay or site unavailability."
+      target_domain="$domain"
     fi
-    sleep 1
+    
+    domain_ips=$(resolve_domain "$target_domain")
+    if [[ -n "$domain_ips" ]]; then
+      all_ips+="$domain_ips"$'\n'
+    fi
+  done
 done
 
-# Final message
+# Remove duplicates and add to cache
+unique_ips=$(echo "$all_ips" | sort -u | grep -v "^$" || true)
+echo "$unique_ips" >> "$IP_CACHE_FILE"
+
+# Add IPs to iptables in batches
+echo "Adding $(echo "$unique_ips" | wc -l) unique IP addresses to firewall..."
+add_ips_to_chain "$CHAIN_OUT" "$unique_ips"
+
+# Process discovered dependencies if available
+if [[ -f "$DEPENDENCIES_FILE" ]]; then
+  echo "Processing discovered dependencies..."
+  
+  # Define blocked domains as a safety check
+  blocked_domains="google\.com|github\.com|youtube\.com|facebook\.com|twitter\.com|instagram\.com|reddit\.com|stackoverflow\.com|stackexchange\.com|discord\.com|telegram\.org|whatsapp\.com|tiktok\.com|linkedin\.com|medium\.com|wikipedia\.org|amazon\.com|microsoft\.com|apple\.com|openai\.com|chatgpt\.com|anthropic\.com|claude\.ai|gemini\.google\.com|bard\.google\.com|bing\.com|yahoo\.com|duckduckgo\.com|search\.yahoo\.com|yandex\.com|baidu\.com"
+  
+  # Collect dependency domains
+  dep_domains=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    
+    # Clean up domain name
+    domain="${line#.}"
+    domain="${domain#http://}"
+    domain="${domain#https://}"
+    domain="${domain%%/*}"
+    
+    # Additional safety check - skip blocked domains
+    if echo "$domain" | grep -qE "($blocked_domains)"; then
+      echo "  ⚠️  Skipping blocked domain: $domain"
+      continue
+    fi
+    
+    # Skip if already processed
+    if grep -q "^$domain$" "$DOMAIN_CACHE_FILE"; then
+      continue
+    fi
+    
+    dep_domains+=("$domain")
+  done < "$DEPENDENCIES_FILE"
+  
+  # Process dependency domains efficiently
+  dep_ips=""
+  echo "Processing ${#dep_domains[@]} dependency domains..."
+  for domain in "${dep_domains[@]}"; do
+    echo "  → $domain"
+    echo "$domain" >> "$DOMAIN_CACHE_FILE"
+    
+    domain_ips=$(resolve_domain "$domain")
+    if [[ -n "$domain_ips" ]]; then
+      dep_ips+="$domain_ips"$'\n'
+    fi
+  done
+  
+  # Add dependency IPs
+  if [[ -n "$dep_ips" ]]; then
+    unique_dep_ips=$(echo "$dep_ips" | sort -u | grep -v "^$" || true)
+    echo "$unique_dep_ips" >> "$IP_CACHE_FILE"
+    echo "Adding $(echo "$unique_dep_ips" | wc -l) dependency IP addresses..."
+    add_ips_to_chain "$CHAIN_OUT" "$unique_dep_ips"
+  fi
+fi
+
+# Add essential CDNs and dependencies
+common_cdns=(
+  "cloudflare.com"
+  "cloudfront.net"
+  "jsdelivr.net"
+  "unpkg.com"
+  "jquery.com"
+  "bootstrapcdn.com"
+  "fontawesome.com"
+  "fonts.googleapis.com"
+  "fonts.gstatic.com"
+  "ajax.googleapis.com"
+  "cdnjs.cloudflare.com"
+  "gstatic.com"
+  "challenges.cloudflare.com"
+  "mathjax.org"
+  "cdn.mathjax.org"
+  "static.cloudflareinsights.com"
+  "hcaptcha.com"
+  "recaptcha.net"
+  "typekit.net"
+  "fonts.net"
+)
+
+echo "Adding essential CDN IPs..."
+cdn_ips=""
+for cdn in "${common_cdns[@]}"; do
+  # Skip if already processed
+  if grep -q "^$cdn$" "$DOMAIN_CACHE_FILE"; then
+    continue
+  fi
+  
+  echo "  → $cdn"
+  echo "$cdn" >> "$DOMAIN_CACHE_FILE"
+  
+  domain_ips=$(resolve_domain "$cdn")
+  if [[ -n "$domain_ips" ]]; then
+    cdn_ips+="$domain_ips"$'\n'
+  fi
+done
+
+# Add CDN IPs
+if [[ -n "$cdn_ips" ]]; then
+  unique_cdn_ips=$(echo "$cdn_ips" | sort -u | grep -v "^$" || true)
+  echo "$unique_cdn_ips" >> "$IP_CACHE_FILE"
+  echo "Adding $(echo "$unique_cdn_ips" | wc -l) CDN IP addresses..."
+  add_ips_to_chain "$CHAIN_OUT" "$unique_cdn_ips"
+fi
+
+# Set default deny at the end
+iptables -A "$CHAIN_OUT" -j REJECT --reject-with icmp-host-unreachable
+ip6tables -A "$CHAIN_OUT" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
+
+echo "Whitelist IPs updated successfully for user '$USER'"
+EOL
+
+# Make the script executable
+chmod +x "$HELPER_SCRIPT"
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Network restriction helper script created successfully"
+else
+  echo "❌ Failed to create helper script" >&2
+  exit 1
+fi
+
 echo "============================================"
-echo "✅ Internet restrictions successfully set up for user $USER!"
-echo "✅ USB storage devices blocked for user $USER!"
-echo "✅ Allowed domains: $(grep -v "^#" "$SYSTEM_WHITELIST" | grep -v "^$" | tr '\n' ' ')"
+echo "Step 4: Configure Network Restrictions"
 echo "============================================"
-echo ""
-echo "To verify restrictions are working:"
-echo "1. Log in as $USER"
-echo "2. Try to access a non-whitelisted website"
-echo "3. Try to access a whitelisted website"
-echo "4. Try to plug in a USB storage device"
+
+echo "→ Setting up firewall restrictions for $RESTRICT_USER..."
+
+# Flush all iptables rules first to ensure a clean slate
+echo "→ Flushing all existing iptables rules to ensure a clean ruleset..."
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+
+# Same for IPv6 if available
+ip6tables -F 2>/dev/null || true
+ip6tables -X 2>/dev/null || true
+ip6tables -t nat -F 2>/dev/null || true
+ip6tables -t nat -X 2>/dev/null || true
+ip6tables -t mangle -F 2>/dev/null || true
+ip6tables -t mangle -X 2>/dev/null || true
+
+echo "✅ Existing iptables rules flushed"
+
+# Define chains for the specific user
+CHAIN_IN="CONTEST_${RESTRICT_USER^^}_IN"
+CHAIN_OUT="CONTEST_${RESTRICT_USER^^}_OUT"
+
+# Get user UID
+USER_UID=$(id -u "$RESTRICT_USER")
+
+echo "→ Clearing any existing firewall rules for $RESTRICT_USER..."
+
+# Remove existing IPv4 rules in OUTPUT chain if any
+iptables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+
+# Remove existing IPv6 rules in OUTPUT chain if any
+ip6tables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+
+# Delete the chains if they exist to ensure a completely fresh start
+iptables -F "$CHAIN_IN" 2>/dev/null || true
+iptables -X "$CHAIN_IN" 2>/dev/null || true
+iptables -F "$CHAIN_OUT" 2>/dev/null || true
+iptables -X "$CHAIN_OUT" 2>/dev/null || true
+
+# Same for IPv6
+ip6tables -F "$CHAIN_IN" 2>/dev/null || true
+ip6tables -X "$CHAIN_IN" 2>/dev/null || true
+ip6tables -F "$CHAIN_OUT" 2>/dev/null || true
+ip6tables -X "$CHAIN_OUT" 2>/dev/null || true
+
+echo "✅ Existing firewall rules cleared"
+
+echo "→ Creating new chains for contest restrictions..."
+# Create new chains
+iptables -N "$CHAIN_IN"
+iptables -N "$CHAIN_OUT"
+ip6tables -N "$CHAIN_IN" 2>/dev/null || true
+ip6tables -N "$CHAIN_OUT" 2>/dev/null || true
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Iptables chains created"
+else
+  echo "❌ Failed to create iptables chains" >&2
+  exit 1
+fi
+
+# Update whitelist FIRST (before applying jump rules)
+echo "→ Initializing whitelist IP addresses..."
+"$HELPER_SCRIPT" "$RESTRICT_USER"
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Initial whitelist update completed"
+else
+  echo "❌ Failed to update whitelist" >&2
+  exit 1
+fi
+
+# Create user-specific filter rules AFTER populating the chains
+echo "→ Applying user-specific firewall rules..."
+
+# Add new IPv4 rules (only OUTPUT chain - INPUT chain with owner module doesn't work)
+iptables -A OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT"
+
+# Add new IPv6 rules (only OUTPUT chain)
+ip6tables -A OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || echo "  Warning: IPv6 rules not applied (ip6tables may not be available)"
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Firewall rules applied successfully"
+else
+  echo "❌ Failed to apply firewall rules" >&2
+  exit 1
+fi
+
+echo "============================================"
+echo "Step 5: Configure Persistence Services"
+echo "============================================"
+
+echo "→ Setting up systemd services for persistence..."
+
+# Create systemd service file
+echo "→ Creating systemd service: $CONTEST_SERVICE.service"
+cat > "/etc/systemd/system/$CONTEST_SERVICE.service" << EOL
+[Unit]
+Description=Contest Environment Restrictions for $RESTRICT_USER
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/update-contest-whitelist $RESTRICT_USER
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Systemd service file created"
+else
+  echo "❌ Failed to create systemd service" >&2
+  exit 1
+fi
+
+# Create systemd timer for periodic updates
+echo "→ Creating systemd timer: $CONTEST_SERVICE.timer"
+cat > "/etc/systemd/system/$CONTEST_SERVICE.timer" << EOL
+[Unit]
+Description=Periodically update contest whitelist IPs for $RESTRICT_USER
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target
+EOL
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Systemd timer file created"
+else
+  echo "❌ Failed to create systemd timer" >&2
+  exit 1
+fi
+
+# Enable and start the service and timer
+echo "→ Enabling and starting systemd services..."
+systemctl daemon-reload
+systemctl enable --now "$CONTEST_SERVICE.service"
+systemctl enable --now "$CONTEST_SERVICE.timer"
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Persistence services configured and started"
+else
+  echo "❌ Failed to configure persistence services" >&2
+  exit 1
+fi
+
+echo "============================================"
+echo "✅ Contest Environment Restrictions Applied Successfully!"
+echo "============================================"
+
+echo "Summary:"
+echo "→ User: '$RESTRICT_USER'"
+echo "→ Internet access: Limited to whitelisted domains only"
+echo "→ USB storage devices: Blocked (keyboards/mice still work)"
+echo "→ Persistence: Enabled (survives reboots)"
+echo "→ Auto-updates: IP addresses refresh every 30 minutes"
+echo "→ Completed at: $(date)"
+
 echo "============================================"

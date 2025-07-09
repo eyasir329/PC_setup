@@ -1,4 +1,5 @@
 codeforces.com
+codeforces.org
 codechef.com
 vjudge.net
 atcoder.jp
@@ -10,5 +11,5 @@ lightoj.com
 onlinejudge.org
 uva.onlinejudge.org
 cses.fi
-bapsoj.com
+bapsoj.org
 toph.co
