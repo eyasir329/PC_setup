@@ -1,91 +1,35 @@
 #!/bin/bash
-# Contest Environment Manager - Shell Installer Wrapper
-# This script is a simple wrapper around the Python installer
-
+# Contest Environment Manager Installer
+# Installs all system dependencies and the Python package
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+REQ_DIR="$(dirname "$0")/requirements"
+PY_REQ_FILE="$REQ_DIR/requirements.txt"
+SYS_REQ_FILE="$REQ_DIR/system-requirements.txt"
 
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_INSTALLER="$SCRIPT_DIR/install.py"
+# System dependencies
+SYSTEM_PACKAGES=$(grep -v '^#' "$SYS_REQ_FILE" | grep -v '^$' | tr '\n' ' ')
 
-print_header() {
-    echo -e "\n${BLUE}============================================================${NC}"
-    echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}============================================================${NC}"
-}
+# Playwright browser dependencies
+PLAYWRIGHT_DEPS_CMD="python3 -m playwright install-deps"
+PLAYWRIGHT_INSTALL_CMD="python3 -m playwright install"
 
-print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
+# Install system packages
+if [ "$EUID" -ne 0 ]; then
+  echo "Please run as root: sudo $0"
+  exit 1
+fi
 
-print_error() {
-    echo -e "${RED}❌ $1${NC}"
-}
+echo "[1/4] Installing system packages..."
+apt-get update
+apt-get install -y $SYSTEM_PACKAGES
 
-print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
+echo "[2/4] Installing Python package (with PEP 668 workaround)..."
+pip3 install --break-system-packages -r "$PY_REQ_FILE"
 
-check_python() {
-    if ! command -v python3 >/dev/null 2>&1; then
-        print_error "Python 3 is not installed. Please install Python 3 first."
-        exit 1
-    fi
-}
+echo "[3/4] Installing Playwright browsers and dependencies..."
+$PLAYWRIGHT_DEPS_CMD
+$PLAYWRIGHT_INSTALL_CMD
 
-check_installer() {
-    if [[ ! -f "$PYTHON_INSTALLER" ]]; then
-        print_error "Python installer not found: $PYTHON_INSTALLER"
-        exit 1
-    fi
-}
-
-main() {
-    print_header "Contest Environment Manager - Shell Installer"
-    
-    check_python
-    check_installer
-    
-    case "${1:-}" in
-        install)
-            print_success "Calling Python installer with 'install' command..."
-            shift # Remove 'install' from arguments
-            exec python3 "$PYTHON_INSTALLER" --install "$@"
-            ;;
-        uninstall)
-            print_success "Calling Python installer with 'uninstall' command..."
-            shift # Remove 'uninstall' from arguments
-            exec python3 "$PYTHON_INSTALLER" --uninstall "$@"
-            ;;
-        *)
-            echo "Usage: $0 {install|uninstall} [options]"
-            echo ""
-            echo "Commands:"
-            echo "  install    - Install the contest environment manager"
-            echo "  uninstall  - Uninstall the contest environment manager"
-            echo ""
-            echo "Options (for install):"
-            echo "  --prefix PATH      - Installation prefix (default: /usr/local)"
-            echo "  --skip-system      - Skip system package installation"
-            echo "  --skip-python      - Skip Python package installation"
-            echo ""
-            echo "Examples:"
-            echo "  sudo $0 install"
-            echo "  sudo $0 install --skip-system"
-            echo "  sudo $0 install --prefix /opt"
-            echo "  sudo $0 uninstall"
-            echo ""
-            echo "For more options, use: python3 install.py --help"
-            exit 1
-            ;;
-    esac
-}
-
-main "$@"
+echo "[4/4] Setup complete!"
+echo "You can now use contest-manager CLI commands."

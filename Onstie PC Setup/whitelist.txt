@@ -1,3 +1,7 @@
+# Contest Environment Manager - Whitelisted Sites
+# Add one domain per line
+# Comments start with #
+
 atcoder.jp
 bapsoj.org
 codechef.com
@@ -6,6 +10,7 @@ codeforces.org
 cses.fi
 hackerearth.com
 hackerrank.com
+leetcode.com
 lightoj.com
 onlinejudge.org
 spoj.com

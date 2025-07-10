@@ -1,0 +1,16 @@
+# Contest Environment Manager - System Dependencies
+# List one package per line. Comments with # are ignored.
+
+squid
+iptables
+ip6tables
+dnsutils
+usbutils
+util-linux
+python3-pip
+python3-venv
+
+# For Playwright browser automation:
+# After install, run:
+#   python3 -m playwright install
+#   python3 -m playwright install-deps

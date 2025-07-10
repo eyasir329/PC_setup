@@ -1,0 +1,18 @@
+# Default whitelist for Contest Environment Manager
+# Add one domain per line
+# Comments start with #
+codeforces.com
+codeforces.org
+atcoder.jp
+codechef.com
+hackerrank.com
+hackerearth.com
+topcoder.com
+spoj.com
+uva.onlinejudge.org
+onlinejudge.org
+lightoj.com
+toph.co
+bapsoj.org
+vjudge.net
+cses.fi
