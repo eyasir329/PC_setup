@@ -609,6 +609,8 @@ Requires=${CONTEST_SERVICE}-lock.service
 Type=oneshot
 ExecStart=/usr/local/bin/update-contest-whitelist $RESTRICT_USER
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15
 
 [Install]
 WantedBy=multi-user.target
