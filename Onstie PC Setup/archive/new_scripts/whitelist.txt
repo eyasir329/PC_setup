@@ -1,15 +1,1 @@
-codeforces.com
-codeforces.org
-codechef.com
-vjudge.net
-atcoder.jp
 hackerrank.com
-hackerearth.com
-topcoder.com
-spoj.com
-lightoj.com
-onlinejudge.org
-uva.onlinejudge.org
-cses.fi
-bapsoj.org
-toph.co
