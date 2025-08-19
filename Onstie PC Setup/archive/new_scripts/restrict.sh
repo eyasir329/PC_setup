@@ -567,18 +567,32 @@ else
   exit 1
 fi
 
+
 echo "============================================"
-echo "Step 5: Configure Persistence Services"
+echo "Step 5: Configure systemd services"
 echo "============================================"
 
-echo "→ Setting up systemd services for persistence..."
+# Boot-time instant lock (drop everything first)
+cat > "/etc/systemd/system/${CONTEST_SERVICE}-lock.service" << EOL
+[Unit]
+Description=Instant lockdown for $RESTRICT_USER at boot
+Before=network.target
 
-# Create systemd service file
-echo "→ Creating systemd service: $CONTEST_SERVICE.service"
-cat > "/etc/systemd/system/$CONTEST_SERVICE.service" << EOL
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables -A OUTPUT -m owner --uid-owner $RESTRICT_USER -j DROP
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+# Whitelist service (applies after network is up)
+cat > "/etc/systemd/system/${CONTEST_SERVICE}.service" << EOL
 [Unit]
 Description=Contest Environment Restrictions for $RESTRICT_USER
-After=network.target
+After=network-online.target
+Wants=network-online.target
+Requires=${CONTEST_SERVICE}-lock.service
 
 [Service]
 Type=oneshot
@@ -589,67 +603,29 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOL
 
-if [[ $? -eq 0 ]]; then
-  echo "✅ Systemd service file created"
-else
-  echo "❌ Failed to create systemd service" >&2
-  exit 1
-fi
-
-# Create systemd timer for periodic updates
-echo "→ Creating systemd timer: $CONTEST_SERVICE.timer"
-cat > "/etc/systemd/system/$CONTEST_SERVICE.timer" << EOL
+# Timer for periodic refresh
+cat > "/etc/systemd/system/${CONTEST_SERVICE}.timer" << EOL
 [Unit]
 Description=Periodically update contest whitelist IPs for $RESTRICT_USER
 
 [Timer]
-OnBootSec=2min
+OnBootSec=1min
 OnUnitActiveSec=30min
 
 [Install]
 WantedBy=timers.target
 EOL
 
-if [[ $? -eq 0 ]]; then
-  echo "✅ Systemd timer file created"
-else
-  echo "❌ Failed to create systemd timer" >&2
-  exit 1
-fi
-
-# Enable and start the service and timer
 echo "→ Enabling and starting systemd services..."
 systemctl daemon-reload
-systemctl enable --now "$CONTEST_SERVICE.service"
-systemctl enable --now "$CONTEST_SERVICE.timer"
+systemctl enable --now "${CONTEST_SERVICE}-lock.service"
+systemctl enable --now "${CONTEST_SERVICE}.service"
+systemctl enable --now "${CONTEST_SERVICE}.timer"
 
 if [[ $? -eq 0 ]]; then
   echo "✅ Persistence services configured and started"
 else
   echo "❌ Failed to configure persistence services" >&2
-  exit 1
-fi
-
-echo "============================================"
-echo "Step 6: Ensure Firewall Persistence"
-echo "============================================"
-
-# Install iptables-persistent to restore firewall rules on boot
-if ! dpkg -s iptables-persistent &>/dev/null; then
-  echo "→ Installing iptables-persistent..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
-else
-  echo "✅ iptables-persistent already installed"
-fi
-
-# Save current iptables and ip6tables rules
-echo "→ Saving current firewall rules..."
-netfilter-persistent save
-
-if [[ $? -eq 0 ]]; then
-  echo "✅ Firewall rules saved and will persist across reboots"
-else
-  echo "❌ Failed to save firewall rules" >&2
   exit 1
 fi
 
