@@ -61,9 +61,9 @@ else
   echo "✅ Whitelist configuration found"
 fi
 
-# Add HackerRank domains to whitelist if not already present
-echo "→ Ensuring HackerRank domains are in whitelist..."
-HACKERRANK_DOMAINS=(
+# Add essential domains if missing
+echo "→ Ensuring essential domains are in whitelist..."
+ESSENTIAL_DOMAINS=(
   "hackerrank.com"
   "www.hackerrank.com"
   "api.hackerrank.com"
@@ -72,20 +72,28 @@ HACKERRANK_DOMAINS=(
   "static.hackerrank.com"
   "hrcdn.net"
   "www.hrcdn.net"
+  "challenges.cloudflare.com"
+  "fonts.googleapis.com"
+  "fonts.gstatic.com"
+  "cdnjs.cloudflare.com"
+  "ajax.googleapis.com"
+  "gstatic.com"
+  "recaptcha.net"
+  "hcaptcha.com"
 )
 
-for domain in "${HACKERRANK_DOMAINS[@]}"; do
+for domain in "${ESSENTIAL_DOMAINS[@]}"; do
   if ! grep -q "$domain" "$WHITELIST_FILE"; then
     echo "$domain" >> "$WHITELIST_FILE"
-    echo "  ✅ Added: $domain"
+    echo "  ✅ Added essential domain: $domain"
   fi
 done
 
 # Check for dependency discovery results
 echo "→ Checking for discovered dependencies..."
 if [[ ! -f "$DEPENDENCIES_FILE" ]]; then
-  echo "⚠️  Warning: No discovered dependencies found. Consider running discover-dependencies.sh first."
-  echo "→ Proceeding with static dependencies only."
+  echo "⚠️  Warning: No discovered dependencies found. Running discovery now..."
+  bash "$SCRIPT_DIR/discover-dependencies.sh"
 else
   echo "✅ Discovered dependencies found"
 fi
