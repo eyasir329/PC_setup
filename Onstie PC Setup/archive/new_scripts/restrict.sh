@@ -61,6 +61,26 @@ else
   echo "✅ Whitelist configuration found"
 fi
 
+# Add HackerRank domains to whitelist if not already present
+echo "→ Ensuring HackerRank domains are in whitelist..."
+HACKERRANK_DOMAINS=(
+  "hackerrank.com"
+  "www.hackerrank.com"
+  "api.hackerrank.com"
+  "cdn.hackerrank.com"
+  "assets.hackerrank.com"
+  "static.hackerrank.com"
+  "hrcdn.net"
+  "www.hrcdn.net"
+)
+
+for domain in "${HACKERRANK_DOMAINS[@]}"; do
+  if ! grep -q "$domain" "$WHITELIST_FILE"; then
+    echo "$domain" >> "$WHITELIST_FILE"
+    echo "  ✅ Added: $domain"
+  fi
+done
+
 # Check for dependency discovery results
 echo "→ Checking for discovered dependencies..."
 if [[ ! -f "$DEPENDENCIES_FILE" ]]; then
@@ -489,25 +509,6 @@ echo "============================================"
 
 echo "→ Setting up firewall restrictions for $RESTRICT_USER..."
 
-# Flush all iptables rules first to ensure a clean slate
-echo "→ Flushing all existing iptables rules to ensure a clean ruleset..."
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-
-# Same for IPv6 if available
-ip6tables -F 2>/dev/null || true
-ip6tables -X 2>/dev/null || true
-ip6tables -t nat -F 2>/dev/null || true
-ip6tables -t nat -X 2>/dev/null || true
-ip6tables -t mangle -F 2>/dev/null || true
-ip6tables -t mangle -X 2>/dev/null || true
-
-echo "✅ Existing iptables rules flushed"
-
 # Define chains for the specific user
 CHAIN_IN="CONTEST_${RESTRICT_USER^^}_IN"
 CHAIN_OUT="CONTEST_${RESTRICT_USER^^}_OUT"
@@ -578,24 +579,9 @@ else
   exit 1
 fi
 
-
 echo "============================================"
 echo "Step 5: Configure systemd services"
 echo "============================================"
-
-# Boot-time instant lock (drop everything first)
-cat > "/etc/systemd/system/${CONTEST_SERVICE}-lock.service" << EOL
-[Unit]
-Description=Instant lockdown for $RESTRICT_USER at boot
-Before=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/iptables -A OUTPUT -m owner --uid-owner $RESTRICT_USER -j DROP
-
-[Install]
-WantedBy=multi-user.target
-EOL
 
 # Whitelist service (applies after network is up)
 cat > "/etc/systemd/system/${CONTEST_SERVICE}.service" << EOL
@@ -603,7 +589,6 @@ cat > "/etc/systemd/system/${CONTEST_SERVICE}.service" << EOL
 Description=Contest Environment Restrictions for $RESTRICT_USER
 After=network-online.target
 Wants=network-online.target
-Requires=${CONTEST_SERVICE}-lock.service
 
 [Service]
 Type=oneshot
@@ -631,7 +616,6 @@ EOL
 
 echo "→ Enabling and starting systemd services..."
 systemctl daemon-reload
-systemctl enable --now "${CONTEST_SERVICE}-lock.service"
 systemctl enable --now "${CONTEST_SERVICE}.service"
 systemctl enable --now "${CONTEST_SERVICE}.timer"
 
@@ -652,6 +636,7 @@ echo "→ Internet access: Limited to whitelisted domains only"
 echo "→ USB storage devices: Blocked (keyboards/mice still work)"
 echo "→ Persistence: Enabled (survives reboots)"
 echo "→ Auto-updates: IP addresses refresh every 30 minutes"
+echo "→ HackerRank domains: Added to whitelist"
 echo "→ Completed at: $(date)"
 
 echo "============================================"
