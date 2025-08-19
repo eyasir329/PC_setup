@@ -34,8 +34,9 @@ if [[ ! -f "$WHITELIST_FILE" ]]; then
     cp "$LOCAL_WHITELIST" "$WHITELIST_FILE"
     echo "✅ Created $WHITELIST_FILE from local whitelist.txt"
   else
-    echo "❌ No whitelist found. Provide $WHITELIST_FILE or ./whitelist.txt"
-    exit 1
+    echo "⚠️ No whitelist found. Creating default whitelist with hackerrank.com"
+    echo "hackerrank.com" > "$WHITELIST_FILE"
+    echo "✅ Created $WHITELIST_FILE with default entry: hackerrank.com"
   fi
 else
   echo "✅ Whitelist exists at $WHITELIST_FILE"

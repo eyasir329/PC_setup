@@ -24,23 +24,27 @@ echo "============================================"
 [[ $EUID -eq 0 ]] || { echo "❌ Must run as root"; exit 1; }
 id "$RESTRICT_USER" >/dev/null 2>&1 || { echo "❌ User '$RESTRICT_USER' not found"; exit 1; }
 
-# --- Step 1: Stop and disable systemd ----------------------------------------
-echo "→ Stopping systemd unit/timer..."
+# --- Step 1: Remove systemd persistence --------------------------------------
+echo "→ Stopping and disabling systemd unit/timer..."
 systemctl stop "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl stop "$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.timer" 2>/dev/null || true
 
+# Mask to prevent accidental restart
+systemctl mask "$CONTEST_SERVICE.service" 2>/dev/null || true
+systemctl mask "$CONTEST_SERVICE.timer" 2>/dev/null || true
+
 echo "→ Removing systemd service files..."
 rm -f "/etc/systemd/system/$CONTEST_SERVICE.service" 2>/dev/null || true
 rm -f "/etc/systemd/system/$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl daemon-reload
+systemctl reset-failed
 
 echo "✅ Systemd unit/timer removed"
 
 # --- Step 2: Remove firewall rules -------------------------------------------
 CHAIN_OUT="${CHAIN_PREFIX}_${RESTRICT_USER^^}_OUT"
-
 USER_UID=$(id -u "$RESTRICT_USER")
 
 echo "→ Removing firewall rules for UID $USER_UID..."
