@@ -428,6 +428,17 @@ common_cdns=(
   "recaptcha.net"
   "typekit.net"
   "fonts.net"
+  "hackerrank.com"
+  "www.hackerrank.com"
+  "api.hackerrank.com"
+  "assets.hackerrank.com"
+  "static.hackerrank.com"
+  "fonts.googleapis.com"   # already included, needed by HackerRank
+  "fonts.gstatic.com"     # already included
+  "cdnjs.cloudflare.com"  # already included
+  "stackblitz.io"         # sometimes used in embedded coding exercises
+  "unpkg.com"             # already included
+  "code.jquery.com"       # some challenge pages use jQuery CDN
 )
 
 echo "Adding essential CDN IPs..."
