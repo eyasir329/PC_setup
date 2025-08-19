@@ -631,6 +631,29 @@ else
 fi
 
 echo "============================================"
+echo "Step 6: Ensure Firewall Persistence"
+echo "============================================"
+
+# Install iptables-persistent to restore firewall rules on boot
+if ! dpkg -s iptables-persistent &>/dev/null; then
+  echo "→ Installing iptables-persistent..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
+else
+  echo "✅ iptables-persistent already installed"
+fi
+
+# Save current iptables and ip6tables rules
+echo "→ Saving current firewall rules..."
+netfilter-persistent save
+
+if [[ $? -eq 0 ]]; then
+  echo "✅ Firewall rules saved and will persist across reboots"
+else
+  echo "❌ Failed to save firewall rules" >&2
+  exit 1
+fi
+
+echo "============================================"
 echo "✅ Contest Environment Restrictions Applied Successfully!"
 echo "============================================"
 
