@@ -66,3 +66,4 @@ echo "  sudo $COMMAND_NAME reset           # Reset participant account"
 echo "  sudo $COMMAND_NAME add example.com # Add domain to whitelist"
 echo "  sudo $COMMAND_NAME status          # Check restriction status"
 echo "  sudo $COMMAND_NAME help            # Show all available commands"
+

@@ -1,5 +1,0 @@
-.env
-data/
-*.pyc
-*.txt
-!requrements.txt

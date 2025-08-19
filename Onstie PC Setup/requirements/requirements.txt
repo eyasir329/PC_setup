@@ -1,5 +1,0 @@
-# Contest Environment Manager - Python Dependencies
-
-dnspython>=2.1.0
-psutil>=5.8.0
-playwright>=1.44.0
