@@ -237,7 +237,7 @@ cat > "/etc/systemd/system/$CONTEST_SERVICE.timer" <<EOF
 Description=Refresh contest whitelist for $RESTRICT_USER every 30m
 
 [Timer]
-OnBootSec=10sec
+OnBootSec=0sec
 OnUnitActiveSec=30min
 Unit=$CONTEST_SERVICE.service
 
