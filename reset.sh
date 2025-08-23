@@ -76,21 +76,33 @@ systemctl stop "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl stop "$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.timer" 2>/dev/null || true
+systemctl mask "$CONTEST_SERVICE.service" 2>/dev/null || true
+systemctl mask "$CONTEST_SERVICE.timer" 2>/dev/null || true
 rm -f "/etc/systemd/system/$CONTEST_SERVICE.service" "/etc/systemd/system/$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl daemon-reload
+systemctl reset-failed
 
 # Remove firewall rules
 CHAIN_OUT="${CHAIN_PREFIX}_${USER^^}_OUT"
-iptables  -D OUTPUT -m owner --uid-owner "$(id -u "$USER")" -j "$CHAIN_OUT" 2>/dev/null || true
-ip6tables -D OUTPUT -m owner --uid-owner "$(id -u "$USER")" -j "$CHAIN_OUT" 2>/dev/null || true
+USER_UID=$(id -u "$USER")
+
+iptables  -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+ip6tables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+
 iptables  -F "$CHAIN_OUT" 2>/dev/null || true
 iptables  -X "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -F "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -X "$CHAIN_OUT" 2>/dev/null || true
 
+# Safety flush OUTPUT (restores root networking if broken)
+iptables -F OUTPUT || true
+ip6tables -F OUTPUT || true
+
 # Remove USB restrictions
 rm -f /etc/modprobe.d/contest-usb-storage-blacklist.conf 2>/dev/null || true
 rm -f /etc/polkit-1/rules.d/99-contest-block-mount.rules 2>/dev/null || true
+rm -f /etc/udev/rules.d/99-contest-block-usb.rules 2>/dev/null || true
+
 modprobe usb_storage 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true
 udevadm trigger 2>/dev/null || true
@@ -164,7 +176,7 @@ for file in /etc/pam.d/common-auth /etc/pam.d/common-session; do
       ;;
     *session*)
       if ! grep -qxF "session optional pam_gnome_keyring.so auto_start" "$file"; then
-        echo "session optional pam_gnome_keyring.so auto_start" | sudo tee -a "$file"
+        echo "session optional pam_gnome-keyring.so auto_start" | sudo tee -a "$file"
       fi
       ;;
   esac
