@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ============================================================================
 # Contest Environment Unrestriction Script
-# Removes all restrictions applied by restrict.sh
-# Restores full internet + USB access for the participant user
+# - Removes all restrictions applied by restrict.sh
+# - Restores full internet + USB access for the participant user
+# ============================================================================
 
 DEFAULT_USER="participant"
 RESTRICT_USER="${1:-$DEFAULT_USER}"
@@ -56,12 +58,17 @@ iptables  -X "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -F "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -X "$CHAIN_OUT" 2>/dev/null || true
 
+# Flush any leftover OUTPUT rules (safety, optional)
+iptables -F OUTPUT || true
+ip6tables -F OUTPUT || true
+
 echo "✅ Firewall rules and chains removed"
 
 # --- Step 3: Remove USB restrictions ----------------------------------------
 echo "→ Removing USB restrictions..."
 rm -f /etc/modprobe.d/contest-usb-storage-blacklist.conf 2>/dev/null || true
 rm -f /etc/polkit-1/rules.d/99-contest-block-mount.rules 2>/dev/null || true
+rm -f /etc/udev/rules.d/99-contest-block-usb.rules 2>/dev/null || true
 
 modprobe usb_storage 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true
@@ -97,6 +104,7 @@ ip6tables -L | grep -q "$CHAIN_PREFIX" && echo "⚠️ IPv6 chains still exist" 
 systemctl list-units --all | grep -q "$CONTEST_SERVICE" && echo "⚠️ Systemd entries remain" || echo "✅ No systemd entries"
 [[ -f /etc/modprobe.d/contest-usb-storage-blacklist.conf ]] && echo "⚠️ USB blacklist remains" || echo "✅ No USB blacklist"
 [[ -f /etc/polkit-1/rules.d/99-contest-block-mount.rules ]] && echo "⚠️ Polkit block remains" || echo "✅ No Polkit restrictions"
+[[ -f /etc/udev/rules.d/99-contest-block-usb.rules ]] && echo "⚠️ Udev block remains" || echo "✅ No Udev restrictions"
 
 echo "============================================"
 echo "✅ Contest Environment Unrestriction Complete"
