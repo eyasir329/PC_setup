@@ -3,10 +3,12 @@ set -euo pipefail
 
 # ================================
 # Reset User Environment Script
+# - Restores /home from backup
+# - Removes contest restrictions (same as unrestrict, noninteractive)
 # ================================
 
 DEFAULT_USER="participant"
-USER="${RESET_USER:-$DEFAULT_USER}"
+USER="${1:-$DEFAULT_USER}"
 
 CONFIG_DIR="/usr/local/etc/contest-restriction"
 WHITELIST_FILE="$CONFIG_DIR/whitelist.txt"
@@ -22,56 +24,51 @@ echo " Resetting $USER account to default..."
 echo " Started at: $(date)"
 echo "============================================"
 
-# 1. Check if user exists
-if ! id "$USER" &>/dev/null; then
-  echo "❌ User '$USER' does not exist."
-  exit 1
+[[ $EUID -eq 0 ]] || { echo "❌ Must run as root"; exit 1; }
+id "$USER" &>/dev/null || { echo "❌ User '$USER' does not exist."; exit 1; }
+
+# 1) Ensure backup exists (auto-create if missing)
+if [[ ! -d "$BACKUP_DIR" ]]; then
+  echo "⚠️  Backup not found at $BACKUP_DIR."
+  echo "→ Creating initial backup before reset..."
+  mkdir -p "$BACKUP_DIR"
+  rsync -aAX --info=progress2 "/home/$USER/" "$BACKUP_DIR/"
+  echo "✅ Initial backup created successfully."
 fi
 
-# 2. Ensure backup exists (auto-create if missing)
-if [ ! -d "$BACKUP_DIR" ]; then
-    echo "⚠️  Backup not found at $BACKUP_DIR."
-    echo "→ Creating initial backup before reset..."
-    sudo mkdir -p "$BACKUP_DIR"
-    sudo rsync -aAX --info=progress2 "/home/$USER/" "$BACKUP_DIR/"
-    echo "✅ Initial backup created successfully."
-fi
-
-# 3. Ensure user is logged out
-if pgrep -u "$USER" > /dev/null; then
+# 2) Ensure user is logged out
+if pgrep -u "$USER" >/dev/null; then
   echo "❌ $USER is currently logged in. Please log them out before resetting."
   exit 1
 fi
 
-# 4. Delete current user home (safe glob expansion)
+# 3) Wipe home contents (safe glob)
 echo "→ Deleting contents of /home/$USER ..."
 shopt -s nullglob
-sudo rm -rf /home/"$USER"/* || true
+rm -rf /home/"$USER"/* || true
 shopt -u nullglob
 
-# 5. Restore backup
+# 4) Restore backup
 echo "→ Restoring from backup..."
-sudo rsync -aAX "$BACKUP_DIR/" "/home/$USER/"
+rsync -aAX "$BACKUP_DIR/" "/home/$USER/"
 echo "✅ Home directory restored."
 
-# 6. Fix ownership
+# 5) Fix ownership
 echo "→ Fixing permissions..."
-sudo chown -R "$USER:$USER" "/home/$USER"
+chown -R "$USER:$USER" "/home/$USER"
 echo "✅ Permissions fixed."
 
-# 7. Clean temp/config/cache
+# 6) Clean temp/config/cache (optional)
 echo "→ Cleaning sensitive files..."
-find "/home/$USER/" -type f \( -name "*.tmp" -o -name "*.bak" -o -name "*.*~" \) -delete
-sudo rm -rf "/home/$USER/.cache"/* || true
-sudo rm -rf "/home/$USER/.local/share"/* || true
-sudo rm -rf "/home/$USER/.config"/* || true
+find "/home/$USER/" -type f \( -name "*.tmp" -o -name "*.bak" -o -name "*.*~" \) -delete || true
+rm -rf "/home/$USER/.cache"/* "/home/$USER/.local/share"/* "/home/$USER/.config"/* 2>/dev/null || true
 
 # ================================
-# Contest Restriction Cleanup
+# Contest Restriction Cleanup (noninteractive)
 # ================================
 echo "→ Cleaning up contest restrictions..."
 
-# Stop & disable systemd services
+# Stop & disable systemd services + mask
 systemctl stop "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl stop "$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.service" 2>/dev/null || true
@@ -80,29 +77,27 @@ systemctl mask "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl mask "$CONTEST_SERVICE.timer" 2>/dev/null || true
 rm -f "/etc/systemd/system/$CONTEST_SERVICE.service" "/etc/systemd/system/$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl daemon-reload
-systemctl reset-failed
 
-# Remove firewall rules
+# Remove firewall rules (only per-user hooks and chain)
 CHAIN_OUT="${CHAIN_PREFIX}_${USER^^}_OUT"
-USER_UID=$(id -u "$USER")
+USER_UID="$(id -u "$USER")"
 
-iptables  -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
-ip6tables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+while iptables  -C OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null; do
+  iptables  -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" || true
+done
+while ip6tables -C OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null; do
+  ip6tables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" || true
+done
 
 iptables  -F "$CHAIN_OUT" 2>/dev/null || true
 iptables  -X "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -F "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -X "$CHAIN_OUT" 2>/dev/null || true
 
-# Safety flush OUTPUT (restores root networking if broken)
-iptables -F OUTPUT || true
-ip6tables -F OUTPUT || true
-
-# Remove USB restrictions
+# Remove USB restrictions (kernel + polkit + udev)
 rm -f /etc/modprobe.d/contest-usb-storage-blacklist.conf 2>/dev/null || true
 rm -f /etc/polkit-1/rules.d/99-contest-block-mount.rules 2>/dev/null || true
 rm -f /etc/udev/rules.d/99-contest-block-usb.rules 2>/dev/null || true
-
 modprobe usb_storage 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true
 udevadm trigger 2>/dev/null || true
@@ -110,8 +105,9 @@ udevadm trigger 2>/dev/null || true
 # Cleanup caches
 rm -f "$CONFIG_DIR/${USER}_domains_cache.txt" "$CONFIG_DIR/${USER}_ip_cache.txt" 2>/dev/null || true
 
-# Re-create whitelist if missing
+# Re-create whitelist if missing (helpful for future re-restrict)
 if [[ ! -f "$WHITELIST_FILE" ]]; then
+  mkdir -p "$CONFIG_DIR"
   echo "hackerrank.com" > "$WHITELIST_FILE"
   echo "✅ Created default whitelist: hackerrank.com"
 fi
@@ -119,72 +115,57 @@ fi
 echo "✅ Contest restrictions cleaned/reset."
 
 # ================================
-# Development Environment Setup
+# Development Environment Setup (unchanged, but safer)
 # ================================
-
-# 8. Verify essential software
 echo "→ Verifying essential software..."
 REQUIRED_PKGS=(python3 git vim gcc build-essential openjdk-17-jdk codeblocks sublime-text google-chrome-stable firefox code)
 for pkg in "${REQUIRED_PKGS[@]}"; do
-    if dpkg -s "$pkg" &>/dev/null; then
-        echo "✅ $pkg installed"
-    else
-        echo "⚠️  Missing: $pkg"
-    fi
-done
-
-# 9. Code::Blocks setup
-echo "→ Configuring Code::Blocks..."
-sudo -u "$USER" mkdir -p "/home/$USER/cb_projects/bin/Debug" "/home/$USER/cb_projects/bin/Release"
-sudo chmod -R 755 "/home/$USER/cb_projects"
-for file in "/home/$USER/.bashrc" "/home/$USER/.profile"; do
-  if ! grep -qxF "umask 022" "$file"; then
-      echo "umask 022" | sudo tee -a "$file" >/dev/null
+  if dpkg -s "$pkg" &>/dev/null; then
+    echo "✅ $pkg installed"
+  else
+    echo "⚠️  Missing: $pkg"
   fi
 done
-sudo find "/home/$USER/cb_projects/bin" -type f -exec chmod +x {} \;
-sudo setfacl -R -d -m u::rwx,g::rx,o::rx "/home/$USER/cb_projects/bin"
+
+# Code::Blocks setup
+echo "→ Configuring Code::Blocks..."
+sudo -u "$USER" mkdir -p "/home/$USER/cb_projects/bin/Debug" "/home/$USER/cb_projects/bin/Release"
+chmod -R 755 "/home/$USER/cb_projects"
+for file in "/home/$USER/.bashrc" "/home/$USER/.profile"; do
+  grep -qxF "umask 022" "$file" || echo "umask 022" >> "$file"
+done
+find "/home/$USER/cb_projects/bin" -type f -exec chmod +x {} \; || true
+setfacl -R -d -m u::rwx,g::rx,o::rx "/home/$USER/cb_projects/bin" 2>/dev/null || true
 sudo -u "$USER" mkdir -p "/home/$USER/.config/codeblocks/share"
 cat <<EOF | sudo -u "$USER" tee "/home/$USER/.config/codeblocks/share/terminals.conf" >/dev/null
 [General]
 terminal_program=xterm
 terminal_cmd=xterm -T \$TITLE -e
 EOF
-cat <<'EOF' | sudo tee /usr/local/bin/codeblocks-run >/dev/null
+cat <<'EOF' >/usr/local/bin/codeblocks-run
 #!/bin/bash
 chmod +x "$@"
 "$@"
 EOF
-sudo chmod +x /usr/local/bin/codeblocks-run
-if ! grep -qxF "alias make-executable=\"chmod +x\"" "/home/$USER/.bashrc"; then
-  echo 'alias make-executable="chmod +x"' | sudo tee -a "/home/$USER/.bashrc" >/dev/null
-fi
-if ! grep -qxF "export PATH=\$PATH:/home/$USER" "/home/$USER/.bashrc"; then
-  echo "export PATH=\$PATH:/home/$USER" | sudo tee -a "/home/$USER/.bashrc"
-fi
+chmod +x /usr/local/bin/codeblocks-run
+grep -qxF 'alias make-executable="chmod +x"' "/home/$USER/.bashrc" || echo 'alias make-executable="chmod +x"' >> "/home/$USER/.bashrc"
+grep -qxF "export PATH=\$PATH:/home/$USER" "/home/$USER/.bashrc" || echo "export PATH=\$PATH:/home/$USER" >> "/home/$USER/.bashrc"
 echo "✅ Code::Blocks setup complete."
 
-# 10. Keyring / PAM
+# Keyring / PAM
 echo "→ Configuring keyring..."
-sudo apt install -y libpam-gnome-keyring
+apt-get update -qq || true
+apt-get install -y libpam-gnome-keyring || true
 for file in /etc/pam.d/common-auth /etc/pam.d/common-session; do
   case "$file" in
-    *auth*)
-      if ! grep -qxF "auth optional pam_gnome_keyring.so" "$file"; then
-        echo "auth optional pam_gnome_keyring.so" | sudo tee -a "$file"
-      fi
-      ;;
-    *session*)
-      if ! grep -qxF "session optional pam_gnome_keyring.so auto_start" "$file"; then
-        echo "session optional pam_gnome-keyring.so auto_start" | sudo tee -a "$file"
-      fi
-      ;;
+    *auth*)    grep -qxF "auth optional pam_gnome_keyring.so" "$file" || echo "auth optional pam_gnome_keyring.so" >> "$file" ;;
+    *session*) grep -qxF "session optional pam_gnome_keyring.so auto_start" "$file" || echo "session optional pam_gnome_keyring.so auto_start" >> "$file" ;;
   esac
 done
-sudo -u "$USER" rm -f "/home/$USER/.local/share/keyrings/"*
+sudo -u "$USER" rm -f "/home/$USER/.local/share/keyrings/"* 2>/dev/null || true
 echo "✅ Keyring configuration complete."
 
-# 11. VS Code extensions
+# VS Code extensions
 echo "→ Installing VS Code extensions..."
 if command -v code &>/dev/null; then
   EXTENSIONS=(ms-vscode.cpptools ms-python.python redhat.java)

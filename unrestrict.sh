@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ============================================================================
 # Contest Environment Unrestriction Script
-# - Removes all restrictions applied by restrict.sh
-# - Restores full internet + USB access for the participant user
-# ============================================================================
+# Removes all restrictions applied by restrict.sh
+# Restores full internet + USB access for the participant user
 
 DEFAULT_USER="participant"
 RESTRICT_USER="${1:-$DEFAULT_USER}"
@@ -32,14 +30,11 @@ systemctl stop "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl stop "$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl disable "$CONTEST_SERVICE.timer" 2>/dev/null || true
-
-# Mask to prevent accidental restart
 systemctl mask "$CONTEST_SERVICE.service" 2>/dev/null || true
 systemctl mask "$CONTEST_SERVICE.timer" 2>/dev/null || true
 
 echo "→ Removing systemd service files..."
-rm -f "/etc/systemd/system/$CONTEST_SERVICE.service" 2>/dev/null || true
-rm -f "/etc/systemd/system/$CONTEST_SERVICE.timer" 2>/dev/null || true
+rm -f "/etc/systemd/system/$CONTEST_SERVICE.service" "/etc/systemd/system/$CONTEST_SERVICE.timer" 2>/dev/null || true
 systemctl daemon-reload
 systemctl reset-failed
 
@@ -50,17 +45,19 @@ CHAIN_OUT="${CHAIN_PREFIX}_${RESTRICT_USER^^}_OUT"
 USER_UID=$(id -u "$RESTRICT_USER")
 
 echo "→ Removing firewall rules for UID $USER_UID..."
-iptables  -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
-ip6tables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null || true
+# Remove OUTPUT hooks (repeat until absent)
+while iptables  -C OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null; do
+  iptables  -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" || true
+done
+while ip6tables -C OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" 2>/dev/null; do
+  ip6tables -D OUTPUT -m owner --uid-owner "$USER_UID" -j "$CHAIN_OUT" || true
+done
 
+# Flush/delete the per-user chains
 iptables  -F "$CHAIN_OUT" 2>/dev/null || true
 iptables  -X "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -F "$CHAIN_OUT" 2>/dev/null || true
 ip6tables -X "$CHAIN_OUT" 2>/dev/null || true
-
-# Flush any leftover OUTPUT rules (safety, optional)
-iptables -F OUTPUT || true
-ip6tables -F OUTPUT || true
 
 echo "✅ Firewall rules and chains removed"
 
@@ -78,8 +75,7 @@ echo "✅ USB restrictions removed"
 
 # --- Step 4: Cleanup caches --------------------------------------------------
 echo "→ Cleaning caches..."
-rm -f "$CONFIG_DIR/${RESTRICT_USER}_domains_cache.txt" 2>/dev/null || true
-rm -f "$CONFIG_DIR/${RESTRICT_USER}_ip_cache.txt" 2>/dev/null || true
+rm -f "$CONFIG_DIR/${RESTRICT_USER}_domains_cache.txt" "$CONFIG_DIR/${RESTRICT_USER}_ip_cache.txt" 2>/dev/null || true
 
 # Ask about global config removal
 echo ""
@@ -98,14 +94,12 @@ fi
 
 # --- Step 5: Verification ----------------------------------------------------
 echo "============================================"
-echo "Verification:"
 iptables -L | grep -q "$CHAIN_PREFIX" && echo "⚠️ IPv4 chains still exist" || echo "✅ No IPv4 chains"
 ip6tables -L | grep -q "$CHAIN_PREFIX" && echo "⚠️ IPv6 chains still exist" || echo "✅ No IPv6 chains"
 systemctl list-units --all | grep -q "$CONTEST_SERVICE" && echo "⚠️ Systemd entries remain" || echo "✅ No systemd entries"
 [[ -f /etc/modprobe.d/contest-usb-storage-blacklist.conf ]] && echo "⚠️ USB blacklist remains" || echo "✅ No USB blacklist"
 [[ -f /etc/polkit-1/rules.d/99-contest-block-mount.rules ]] && echo "⚠️ Polkit block remains" || echo "✅ No Polkit restrictions"
-[[ -f /etc/udev/rules.d/99-contest-block-usb.rules ]] && echo "⚠️ Udev block remains" || echo "✅ No Udev restrictions"
-
+[[ -f /etc/udev/rules.d/99-contest-block-usb.rules ]] && echo "⚠️ Udev USB rule remains" || echo "✅ No Udev USB rule"
 echo "============================================"
 echo "✅ Contest Environment Unrestriction Complete"
 echo "User:        $RESTRICT_USER"

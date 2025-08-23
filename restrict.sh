@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # ============================================================================
-# Contest Restriction Script
-# - Restricts participant to whitelist-only internet access
+# Contest Restriction Script (default-deny for a single user)
+# - Whitelist-only internet access (per-user via iptables owner match)
 # - Blocks USB mass-storage (kernel blacklist + udev + polkit)
-# - Makes rules persistent with systemd
-# - Safe across reboots (retries, caching, DNS pinned)
+# - Persistent via systemd service + timer (periodic whitelist refresh)
+# - Safe across reboots (DNS pinned to system resolvers, caching)
 # ============================================================================
 
 DEFAULT_USER="participant"
@@ -50,7 +50,7 @@ fi
   && echo "✅ Optional dependencies file found" \
   || echo "⚠️  No discovered dependencies file (optional): $DEPENDENCIES_FILE"
 
-# --- Step 2: Block USB storage -----------------------------------------------
+# --- Step 2: Block USB storage ---------------------------------------------
 echo "→ Blocking USB storage"
 
 # Kernel module blacklist
@@ -73,8 +73,8 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
-# Udev rule
-cat > /etc/udev/rules.d/99-contest-block-usb.rules <<EOF
+# Udev rule (belt & suspenders)
+cat > /etc/udev/rules.d/99-contest-block-usb.rules <<'EOF'
 # Contest: Block USB storage interface
 ACTION=="add", SUBSYSTEMS=="usb", ATTRS{bInterfaceClass}=="08", OWNER="root", GROUP="root"
 EOF
@@ -106,7 +106,7 @@ need dig        || (apt-get update -qq && apt-get install -y dnsutils)
 
 [[ -f "$WHITELIST_FILE" ]] || { echo "Error: $WHITELIST_FILE missing"; exit 1; }
 
-# --- DNS resolvers allowed
+# --- DNS resolvers allowed (pin to current system resolvers) -----------------
 ALLOWED_DNS_V4=("127.0.0.53" "127.0.0.1")
 ALLOWED_DNS_V6=("::1")
 if [[ -f /etc/resolv.conf ]]; then
@@ -118,7 +118,7 @@ fi
 ALLOWED_DNS_V4=($(printf "%s\n" "${ALLOWED_DNS_V4[@]}" | sort -u))
 ALLOWED_DNS_V6=($(printf "%s\n" "${ALLOWED_DNS_V6[@]}" | sort -u))
 
-# --- Chains
+# --- Chains ------------------------------------------------------------------
 iptables -F "$CHAIN_OUT" 2>/dev/null || iptables -N "$CHAIN_OUT"
 ip6tables -F "$CHAIN_OUT" 2>/dev/null || ip6tables -N "$CHAIN_OUT"
 
@@ -127,6 +127,7 @@ ip6tables -A "$CHAIN_OUT" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/
 iptables  -A "$CHAIN_OUT" -d 127.0.0.0/8 -j ACCEPT
 ip6tables -A "$CHAIN_OUT" -d ::1/128 -j ACCEPT 2>/dev/null || true
 
+# Allow DNS to the system resolvers (TCP+UDP 53)
 for ip in "${ALLOWED_DNS_V4[@]}"; do
   iptables -A "$CHAIN_OUT" -p udp -d "$ip" --dport 53 -j ACCEPT
   iptables -A "$CHAIN_OUT" -p tcp -d "$ip" --dport 53 -j ACCEPT
@@ -147,25 +148,26 @@ resolve_domain() {
   printf "%s\n" "$out" | awk 'NF'
 }
 
-# --- Collect domains (strict whitelist-only) ---
-blocked='(google\.com|github\.com|youtube\.com|facebook\.com|twitter\.com|instagram\.com|reddit\.com|stackoverflow\.com|stackexchange\.com|discord\.com|telegram\.org|whatsapp\.com|tiktok\.com|linkedin\.com|medium\.com|wikipedia\.org|amazon\.com|microsoft\.com|apple\.com|openai\.com|chatgpt\.com|chat\.openai\.com|platform\.openai\.com|deepseek\.com|perplexity\.ai|mistral\.ai|huggingface\.co|huggingface\.dev|anthropic\.com|claude\.ai|gemini\.google\.com|bard\.google\.com|bing\.com|copilot\.microsoft\.com|yahoo\.com|duckduckgo\.com|search\.yahoo\.com|yandex\.com|baidu\.com)'
-
-mapfile -t raw_domains < <(awk '
+# --- Collect domains ---------------------------------------------------------
+mapfile -t domains < <(awk '
   /^[[:space:]]*#/ {next}
   /^[[:space:]]*$/ {next}
   {g=$0; sub(/^https?:\/\//,"",g); sub(/^www\./,"",g);
    sub(/\/.*$/,"",g); sub(/^\./,"",g); print tolower(g)}' "$WHITELIST_FILE" | sort -u)
 
-domains=()
-for d in "${raw_domains[@]}"; do
-  if [[ "$d" =~ $blocked ]]; then
-    echo "  ↷ skip blocked (blacklisted): $d"
-    continue
-  fi
-  domains+=("$d")
-done
+# Add dependencies if present, but skip big/AI/general sites (explicitly blocked)
+blocked='(google\.com|github\.com|youtube\.com|facebook\.com|twitter\.com|instagram\.com|reddit\.com|stackoverflow\.com|stackexchange\.com|discord\.com|telegram\.org|whatsapp\.com|tiktok\.com|linkedin\.com|medium\.com|wikipedia\.org|amazon\.com|microsoft\.com|apple\.com|openai\.com|chatgpt\.com|chat\.openai\.com|platform\.openai\.com|deepseek\.com|perplexity\.ai|mistral\.ai|huggingface\.co|huggingface\.dev|anthropic\.com|claude\.ai|gemini\.google\.com|bard\.google\.com|bing\.com|copilot\.microsoft\.com|yahoo\.com|duckduckgo\.com|search\.yahoo\.com|yandex\.com|baidu\.com)'
+if [[ -f "$DEPENDENCIES_FILE" ]]; then
+  while read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# || -z "${line// }" ]] && continue
+    d="${line#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#.}"
+    d="$(printf "%s" "$d" | tr '[:upper:]' '[:lower:]')"
+    [[ "$d" =~ $blocked ]] && { echo "  ↷ skip blocked dep: $d"; continue; }
+    domains+=("$d")
+  done < "$DEPENDENCIES_FILE"
+fi
 
-# --- Resolve and apply
+# --- Resolve and apply -------------------------------------------------------
 > "$DOMAIN_CACHE_FILE"
 > "$IP_CACHE_FILE"
 
@@ -192,11 +194,11 @@ ipv6s="$(printf "%s\n" "$unique_ips" | grep -E ':' || true)"
 while read -r ip; do [[ -n "$ip" ]] && iptables -A "$CHAIN_OUT" -d "$ip" -j ACCEPT; done <<< "$ipv4s"
 while read -r ip; do [[ -n "$ip" ]] && ip6tables -A "$CHAIN_OUT" -d "$ip" -j ACCEPT 2>/dev/null || true; done <<< "$ipv6s"
 
-# Default deny
+# Default deny inside the per-user chain
 iptables  -A "$CHAIN_OUT" -j REJECT --reject-with icmp-host-unreachable
 ip6tables -A "$CHAIN_OUT" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
 
-# Attach chain to user
+# Hook chain for this user only (do NOT touch global rules)
 uid="$(id -u "$USER")"
 iptables  -C OUTPUT -m owner --uid-owner "$uid" -j "$CHAIN_OUT" 2>/dev/null || \
   iptables  -I OUTPUT 1 -m owner --uid-owner "$uid" -j "$CHAIN_OUT"
@@ -221,6 +223,7 @@ After=network-online.target
 Type=oneshot
 ExecStart=$HELPER_SCRIPT $RESTRICT_USER
 RemainAfterExit=yes
+# Try a couple more times after boot (helps when DNS is slow to come up)
 ExecStartPost=/bin/bash -c 'for i in 1 2 3; do sleep 10; $HELPER_SCRIPT $RESTRICT_USER && break; done'
 
 [Install]
@@ -253,4 +256,5 @@ echo "User:        $RESTRICT_USER"
 echo "Whitelist:   $WHITELIST_FILE"
 echo "USB:         Blocked (kernel + udev + polkit)"
 echo "Persistence: systemd service+timer"
+echo "Default:     DENY (allow only whitelisted IPs for this user)"
 echo "============================================"
